@@ -20,7 +20,8 @@ document.getElementById("relever").addEventListener("click", async () => {
     if (r && r.ok) {
       const b = r.bilan;
       bilan.textContent =
-        "Examinés : " + b.examines + "\nArchivés : " + b.archives +
+        "Comptes : " + b.comptes + " · inbox : " + b.inboxTrouvees +
+        "\nExaminés : " + b.examines + "\nArchivés : " + b.archives +
         "\nDéjà vus : " + b.doublons + (b.erreurs ? "\nErreurs : " + b.erreurs : "");
       await rafraichir();
     } else {

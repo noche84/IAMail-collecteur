@@ -105,15 +105,35 @@ async function archiverMessage(entete) {
   }
 }
 
+// Aplatit l'arbre des dossiers (TB renvoie des sous-dossiers imbriqués).
+function aplatirDossiers(dossiers) {
+  const out = [];
+  for (const f of dossiers || []) {
+    out.push(f);
+    if (f.subFolders && f.subFolders.length) out.push(...aplatirDossiers(f.subFolders));
+  }
+  return out;
+}
+
+// Reconnaît une boîte de réception, ancienne et nouvelle API.
+function estInbox(f) {
+  if (f.specialUse && f.specialUse.includes && f.specialUse.includes("inbox")) return true;
+  if (f.type === "inbox") return true; // TB < 128
+  return false;
+}
+
 // Relève tous les messages de la boîte de réception de chaque compte (premier test).
 async function releverBoitesReception(limite) {
-  const comptes = await messenger.accounts.list();
-  let archives = 0, doublons = 0, erreurs = 0, examines = 0;
+  // true = inclure les dossiers (obligatoire depuis TB 121+).
+  const comptes = await messenger.accounts.list(true);
+  let archives = 0, doublons = 0, erreurs = 0, examines = 0, inboxTrouvees = 0;
   const max = limite || 200;
+  console.log("[IAMail] comptes:", comptes.length);
 
   for (const compte of comptes) {
-    const inbox = (compte.folders || []).find(f => f.type === "inbox");
-    if (!inbox) continue;
+    const inbox = aplatirDossiers(compte.folders).find(estInbox);
+    if (!inbox) { console.warn("[IAMail] pas d'inbox pour", compte.name); continue; }
+    inboxTrouvees++;
     let page = await messenger.messages.list(inbox);
     let continuer = true;
     while (continuer) {
@@ -130,5 +150,6 @@ async function releverBoitesReception(limite) {
       if (!page || !page.messages || page.messages.length === 0) continuer = false;
     }
   }
-  return { examines, archives, doublons, erreurs };
+  console.log("[IAMail] bilan", { comptes: comptes.length, inboxTrouvees, examines, archives, doublons, erreurs });
+  return { comptes: comptes.length, inboxTrouvees, examines, archives, doublons, erreurs };
 }
