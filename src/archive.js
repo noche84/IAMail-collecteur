@@ -122,18 +122,38 @@ function estInbox(f) {
   return false;
 }
 
-// Relève tous les messages de la boîte de réception de chaque compte (premier test).
-async function releverBoitesReception(limite) {
-  // true = inclure les dossiers (obligatoire depuis TB 121+).
-  const comptes = await messenger.accounts.list(true);
-  let archives = 0, doublons = 0, erreurs = 0, examines = 0, inboxTrouvees = 0;
-  const max = limite || 200;
-  console.log("[IAMail] comptes:", comptes.length);
+// Rassemble toutes les boîtes de réception, API moderne puis replis.
+async function trouverInbox() {
+  // 1) Voie moderne (TB 128+) : requête directe par usage spécial.
+  try {
+    if (messenger.folders && messenger.folders.query) {
+      const res = await messenger.folders.query({ specialUse: ["inbox"] });
+      if (res && res.length) return res;
+    }
+  } catch (e) { console.warn("[IAMail] folders.query indisponible", e); }
 
+  // 2) Repli : on parcourt rootFolder (puis folders) de chaque compte.
+  const inboxes = [];
+  const comptes = await messenger.accounts.list(true);
   for (const compte of comptes) {
-    const inbox = aplatirDossiers(compte.folders).find(estInbox);
-    if (!inbox) { console.warn("[IAMail] pas d'inbox pour", compte.name); continue; }
-    inboxTrouvees++;
+    const racines = compte.rootFolder ? [compte.rootFolder]
+                  : (compte.folders || []);
+    for (const f of aplatirDossiers(racines)) {
+      if (estInbox(f)) inboxes.push(f);
+    }
+  }
+  return inboxes;
+}
+
+// Relève tous les messages de la boîte de réception (premier test).
+async function releverBoitesReception(limite) {
+  const comptes = await messenger.accounts.list();
+  const inboxes = await trouverInbox();
+  let archives = 0, doublons = 0, erreurs = 0, examines = 0;
+  const max = limite || 200;
+  console.log("[IAMail] comptes:", comptes.length, "inbox:", inboxes.length);
+
+  for (const inbox of inboxes) {
     let page = await messenger.messages.list(inbox);
     let continuer = true;
     while (continuer) {
@@ -150,6 +170,7 @@ async function releverBoitesReception(limite) {
       if (!page || !page.messages || page.messages.length === 0) continuer = false;
     }
   }
-  console.log("[IAMail] bilan", { comptes: comptes.length, inboxTrouvees, examines, archives, doublons, erreurs });
-  return { comptes: comptes.length, inboxTrouvees, examines, archives, doublons, erreurs };
+  const bilan = { comptes: comptes.length, inboxTrouvees: inboxes.length, examines, archives, doublons, erreurs };
+  console.log("[IAMail] bilan", bilan);
+  return bilan;
 }
