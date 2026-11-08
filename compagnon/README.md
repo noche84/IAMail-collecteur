@@ -63,6 +63,30 @@ python3 iamail_compagnon.py --config config.json import
 - Idéalement lancer quand Thunderbird n'écrit pas activement ; au besoin, un
   message tronqué en fin de fichier sera rattrapé au passage suivant.
 
+## Le cerveau — classement (règles déterministes, sans IA)
+Une fois les mails importés et indexés, le compagnon peut les **classer** :
+catégorie, urgence, « à moi / juste en copie / diffusion », courrier en masse,
+soupçon d'hameçonnage, et une **priorité** de synthèse. C'est gratuit, instantané,
+et ça tourne sur tout le corpus. (La couche IA viendra affiner par-dessus.)
+
+```bash
+# 1) Trouver ton/tes adresses pour distinguer "à moi" de "en copie"
+python3 iamail_compagnon.py --config config.json suggerer-adresses
+#    -> ajoute la bonne dans config.json :  "mes_adresses": ["toi@gmail.com"]
+
+# 2) Classer (ré-analyse tout avec --retout)
+python3 iamail_compagnon.py --config config.json analyser
+
+# 3) L'aperçu priorisé — la graine du topo du matin
+python3 iamail_compagnon.py --config config.json topo --nombre 20
+```
+
+Le classement s'écrit dans l'index SQLite (colonnes `categorie`, `urgence`,
+`pour_moi`, `bulk`, `suspect`, `priorite`, `raison`…), donc interrogeable
+librement. Les règles (mots-clés, expéditeurs automatiques) sont de la **donnée
+éditable** en haut du script, pensée pour être ajustée — et demain partagée
+avec GesEnt.
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats

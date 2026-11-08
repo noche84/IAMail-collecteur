@@ -43,13 +43,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
     "dossier_destination": "",
     "base_sqlite": "iamail_index.sqlite3",
     "deplacer": True,
+    "mes_adresses": [],
 }
 
 
@@ -520,6 +521,300 @@ def cmd_import(args):
 
 
 # ----------------------------------------------------------------------------
+# Le cerveau — couche déterministe (règles avant IA)
+# ----------------------------------------------------------------------------
+# Données éditables : c'est volontairement de la donnée, pas du code, pour
+# pouvoir l'ajuster (et, demain, la partager entre le compagnon et GesEnt).
+
+EXPEDITEURS_AUTO = {
+    "no-reply", "noreply", "donotreply", "do-not-reply", "ne-pas-repondre",
+    "nepasrepondre", "mailer-daemon", "postmaster", "bounce", "bounces",
+    "notifications", "notification", "newsletter", "news", "mailing",
+}
+
+MOTS_URGENTS = [
+    "urgent", "immediat", "asap", "au plus vite", "rappel", "relance",
+    "derniere relance", "echeance", "expire", "aujourd hui", "avant demain",
+    "delai", "impaye", "mise en demeure", "action requise", "a traiter",
+]
+
+# (catégorie, mots-clés cherchés dans sujet + expéditeur, dé-accentués)
+REGLES_CATEGORIE = [
+    ("facture",       ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]),
+    ("devis",         ["devis", "offre de prix", "quote", "estimation", "chiffrage"]),
+    ("commande",      ["bon de commande", "commande", "order", "confirmation de commande"]),
+    ("livraison",     ["livraison", "expedition", "colis", "tracking", "suivi de commande",
+                       "bpost", "dpd", "gls", "ups"]),
+    ("rendez_vous",   ["rendez-vous", "reunion", "meeting", "convocation", "agenda",
+                       "invitation", "rdv", "webinar", "webinaire"]),
+    ("reclamation",   ["reclamation", "plainte", "remboursement", "insatisfait", "litige"]),
+    ("reseau_social", ["facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]),
+    ("chantier",      ["chantier", "travaux", "intervention", "depannage"]),
+]
+
+
+def _adresses_spec(valeur):
+    """Liste d'adresses nues (a@b), minuscules, d'un en-tête To/Cc."""
+    out = []
+    for _, addr in email.utils.getaddresses([valeur or ""]):
+        if addr and "@" in addr:
+            out.append(addr.strip().lower())
+    return out
+
+
+def _domaine(adresse):
+    return adresse.split("@", 1)[1].lower() if adresse and "@" in adresse else ""
+
+
+def classer(h, mes_adresses):
+    """
+    h : dict d'en-têtes décodés (from, to, cc, subject, list_unsubscribe,
+        list_id, precedence, auto_submitted, reply_to, return_path).
+    mes_adresses : liste d'adresses de l'utilisateur (minuscules).
+    Renvoie un dict de classement.
+    """
+    de = (h.get("from") or "")
+    de_spec = (_adresses_spec(de) or [""])[0]
+    de_local = de_spec.split("@", 1)[0] if de_spec else ""
+    sujet = h.get("subject") or ""
+    texte = _sans_accents((sujet + " " + de).lower())
+
+    to = _adresses_spec(h.get("to"))
+    cc = _adresses_spec(h.get("cc"))
+    mes = set(mes_adresses or [])
+
+    # --- Automatique / en masse -------------------------------------------
+    bulk = bool(
+        h.get("list_unsubscribe") or h.get("list_id")
+        or (h.get("precedence", "").lower() in ("bulk", "list", "junk"))
+        or de_local in EXPEDITEURS_AUTO
+    )
+    automatique = bool(
+        (h.get("auto_submitted", "").lower() not in ("", "no"))
+        or de_local in EXPEDITEURS_AUTO
+        or (h.get("return_path", "").strip() in ("<>", ""))
+        and (h.get("auto_submitted") or h.get("list_unsubscribe"))
+    )
+
+    # --- À moi / juste en copie / liste -----------------------------------
+    if mes & set(to):
+        pour_moi = True        # je suis destinataire direct → action probable
+    elif mes & set(cc):
+        pour_moi = False       # seulement en copie → pour info
+    else:
+        pour_moi = None        # ni l'un ni l'autre → liste / diffusion
+
+    # --- Catégorie ---------------------------------------------------------
+    categorie, conf_cat = "autre", "faible"
+    for nom, mots in REGLES_CATEGORIE:
+        if any(m in texte for m in mots):
+            categorie, conf_cat = nom, "moyenne"
+            break
+    if categorie == "autre" and bulk:
+        categorie = "reseau_social" if any(
+            r in _domaine(de_spec) for r in ("facebook", "linkedin", "instagram", "twitter")
+        ) else "newsletter"
+        conf_cat = "moyenne"
+
+    # --- Soupçon d'hameçonnage (léger, jamais d'action automatique) --------
+    reply_to = (_adresses_spec(h.get("reply_to")) or [""])[0]
+    suspect = bool(
+        reply_to and _domaine(reply_to) and de_spec
+        and _domaine(reply_to) != _domaine(de_spec)
+        and any(m in texte for m in ("paiement", "facture", "urgent", "compte", "mot de passe", "iban"))
+    )
+
+    # --- Urgence -----------------------------------------------------------
+    if bulk:
+        urgence = "basse"
+    elif any(m in texte for m in MOTS_URGENTS):
+        urgence = "haute"
+    else:
+        urgence = "normale"
+
+    # --- Priorité (la synthèse qui sert le topo) --------------------------
+    if pour_moi and not bulk and urgence == "haute":
+        priorite = "haute"
+    elif pour_moi and not bulk:
+        priorite = "normale"
+    else:
+        priorite = "basse"
+
+    # --- Raison lisible ----------------------------------------------------
+    bouts = []
+    bouts.append("adressé à toi" if pour_moi else
+                 ("juste en copie" if pour_moi is False else "diffusion/liste"))
+    if bulk:
+        bouts.append("courrier en masse")
+    if urgence == "haute":
+        bouts.append("marqueur d'urgence")
+    if suspect:
+        bouts.append("⚠ expéditeur de réponse différent")
+    raison = ", ".join(bouts)
+
+    return {
+        "categorie": categorie,
+        "urgence": urgence,
+        "pour_moi": None if pour_moi is None else int(pour_moi),
+        "bulk": int(bulk),
+        "automatique": int(automatique),
+        "suspect": int(suspect),
+        "priorite": priorite,
+        "raison": raison,
+        "confiance": conf_cat,
+    }
+
+
+COLONNES_ANALYSE = {
+    "categorie": "TEXT", "urgence": "TEXT", "pour_moi": "INTEGER",
+    "bulk": "INTEGER", "automatique": "INTEGER", "suspect": "INTEGER",
+    "priorite": "TEXT", "raison": "TEXT", "confiance": "TEXT",
+    "analyse_source": "TEXT", "analyse_at": "TEXT",
+}
+
+
+def _assurer_colonnes(cx):
+    cols = {r[1] for r in cx.execute("PRAGMA table_info(messages)")}
+    for nom, typ in COLONNES_ANALYSE.items():
+        if nom not in cols:
+            cx.execute(f"ALTER TABLE messages ADD COLUMN {nom} {typ}")
+    cx.commit()
+
+
+def _entetes_du_eml(chemin):
+    """Lit uniquement les en-têtes d'un .eml (rapide)."""
+    from email.parser import BytesHeaderParser
+    with open(chemin, "rb") as f:
+        msg = BytesHeaderParser().parse(f)
+    g = lambda k: _dec_entete(msg.get(k)) if k in ("Subject",) else (msg.get(k) or "")
+    return {
+        "from": _dec_entete(msg.get("From")),
+        "to": msg.get("To") or "",
+        "cc": msg.get("Cc") or "",
+        "subject": _dec_entete(msg.get("Subject")),
+        "list_unsubscribe": msg.get("List-Unsubscribe") or "",
+        "list_id": msg.get("List-Id") or "",
+        "precedence": msg.get("Precedence") or "",
+        "auto_submitted": msg.get("Auto-Submitted") or "",
+        "reply_to": msg.get("Reply-To") or "",
+        "return_path": msg.get("Return-Path") or "",
+    }
+
+
+def cmd_analyser(args):
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    mes = [a.lower() for a in cfg.get("mes_adresses", [])]
+    if not mes:
+        print("⚠ 'mes_adresses' est vide : le « à moi / juste en copie » ne pourra "
+              "pas être déterminé.\n  Lance d'abord :  suggerer-adresses")
+
+    where = "" if args.retout else " WHERE categorie IS NULL"
+    rows = cx.execute(
+        "SELECT message_id, fichier_eml FROM messages" + where
+    ).fetchall()
+    total = len(rows)
+    print(f"[{NOM}] analyse de {total} message(s)…")
+
+    faits, erreurs = 0, 0
+    t0 = time.time()
+    for mid, chemin in rows:
+        if not chemin or not Path(chemin).exists():
+            erreurs += 1
+            continue
+        try:
+            h = _entetes_du_eml(chemin)
+            c = classer(h, mes)
+        except Exception:
+            erreurs += 1
+            continue
+        cx.execute(
+            """UPDATE messages SET categorie=?, urgence=?, pour_moi=?, bulk=?,
+               automatique=?, suspect=?, priorite=?, raison=?, confiance=?,
+               analyse_source=?, analyse_at=? WHERE message_id=?""",
+            (c["categorie"], c["urgence"], c["pour_moi"], c["bulk"],
+             c["automatique"], c["suspect"], c["priorite"], c["raison"],
+             c["confiance"], "regles", datetime.now(timezone.utc).isoformat(), mid),
+        )
+        faits += 1
+        if faits % 2000 == 0:
+            cx.commit()
+    cx.commit()
+    print(f"[{NOM}] analysés : {faits}, ignorés : {erreurs}, en {time.time()-t0:.0f}s")
+    _resume_analyse(cx)
+    cx.close()
+
+
+def _resume_analyse(cx):
+    def compter(req, params=()):
+        return cx.execute(req, params).fetchall()
+    print("\n=== Synthèse ===")
+    tot = cx.execute("SELECT COUNT(*) FROM messages WHERE categorie IS NOT NULL").fetchone()[0]
+    print(f"Classés : {tot}")
+    print("\nPar priorité :")
+    for p, n in compter("SELECT priorite, COUNT(*) FROM messages WHERE categorie IS NOT NULL "
+                        "GROUP BY priorite ORDER BY n DESC".replace("n DESC", "COUNT(*) DESC")):
+        print(f"  {p or '—':10} {n}")
+    print("\nÀ moi / copie / diffusion :")
+    for v, lib in [(1, "adressés à moi"), (0, "juste en copie"), (None, "diffusion/liste")]:
+        if v is None:
+            n = cx.execute("SELECT COUNT(*) FROM messages WHERE pour_moi IS NULL AND categorie IS NOT NULL").fetchone()[0]
+        else:
+            n = cx.execute("SELECT COUNT(*) FROM messages WHERE pour_moi=?", (v,)).fetchone()[0]
+        print(f"  {lib:18} {n}")
+    nb_bulk = cx.execute("SELECT COUNT(*) FROM messages WHERE bulk=1").fetchone()[0]
+    nb_susp = cx.execute("SELECT COUNT(*) FROM messages WHERE suspect=1").fetchone()[0]
+    print(f"\nCourrier en masse : {nb_bulk}")
+    print(f"Soupçons d'hameçonnage (à vérifier) : {nb_susp}")
+    print("\nTop catégories :")
+    for cat, n in compter("SELECT categorie, COUNT(*) FROM messages WHERE categorie IS NOT NULL "
+                         "GROUP BY categorie ORDER BY COUNT(*) DESC LIMIT 10"):
+        print(f"  {cat or '—':16} {n}")
+
+
+def cmd_topo(args):
+    """Aperçu priorisé — la graine du topo du matin."""
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    n = args.nombre
+    print("=== Ce qui semble demander ton attention ===\n")
+    rows = cx.execute(
+        """SELECT date_mail, de_adresse, sujet, priorite, raison
+           FROM messages
+           WHERE pour_moi=1 AND bulk=0
+           ORDER BY CASE priorite WHEN 'haute' THEN 0 WHEN 'normale' THEN 1 ELSE 2 END,
+                    date_mail DESC
+           LIMIT ?""", (n,)).fetchall()
+    if not rows:
+        print("Rien ne ressort (as-tu renseigné 'mes_adresses' puis lancé 'analyser' ?).")
+    for d, de, suj, prio, rai in rows:
+        marque = "‼" if prio == "haute" else "•"
+        print(f"{marque} [{(d or '')[:10]}] {(suj or '(sans objet)')[:60]}")
+        print(f"    de {(de or '')[:40]} — {rai}")
+    cx.close()
+
+
+def cmd_suggerer_adresses(args):
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    from collections import Counter
+    c = Counter()
+    for (dest,) in cx.execute("SELECT destinataires FROM messages WHERE destinataires IS NOT NULL"):
+        try:
+            for a in json.loads(dest):
+                for spec in _adresses_spec(a):
+                    c[spec] += 1
+        except Exception:
+            pass
+    print("Adresses les plus souvent en destinataire (candidates pour 'mes_adresses') :")
+    for addr, n in c.most_common(12):
+        print(f"  {n:6}  {addr}")
+    print("\nAjoute la/les tiennes dans config.json, clé \"mes_adresses\": [ \"...\" ].")
+    cx.close()
+
+
+# ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
 def main(argv=None):
@@ -543,6 +838,17 @@ def main(argv=None):
     s = sub.add_parser("watch", help="surveillance continue")
     s.add_argument("--intervalle", type=int, default=10, help="secondes")
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("analyser", help="classe les messages (règles déterministes)")
+    s.add_argument("--retout", action="store_true", help="ré-analyse tout, pas seulement le nouveau")
+    s.set_defaults(func=cmd_analyser)
+
+    s = sub.add_parser("topo", help="aperçu priorisé (graine du topo du matin)")
+    s.add_argument("--nombre", type=int, default=20)
+    s.set_defaults(func=cmd_topo)
+
+    s = sub.add_parser("suggerer-adresses", help="propose tes adresses pour 'mes_adresses'")
+    s.set_defaults(func=cmd_suggerer_adresses)
 
     s = sub.add_parser("stats", help="statistiques")
     s.set_defaults(func=cmd_stats)
