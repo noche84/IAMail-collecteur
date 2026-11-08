@@ -5,5 +5,7 @@
   "deplacer": true,
   "mbox_sources": [
     "/home/asus/.var/app/org.mozilla.thunderbird_esr/.thunderbird/kb7fqa9k.default-esr/ImapMail/imap.gmail.com/INBOX"
-  ]
+  ],
+  "mes_adresses": [],
+  "expediteurs_importants": []
 }

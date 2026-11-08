@@ -82,10 +82,22 @@ python3 iamail_compagnon.py --config config.json topo --nombre 20
 ```
 
 Le classement s'écrit dans l'index SQLite (colonnes `categorie`, `urgence`,
-`pour_moi`, `bulk`, `suspect`, `priorite`, `raison`…), donc interrogeable
-librement. Les règles (mots-clés, expéditeurs automatiques) sont de la **donnée
-éditable** en haut du script, pensée pour être ajustée — et demain partagée
-avec GesEnt.
+`pour_moi`, `bulk`, `expediteur_humain`, `important`, `suspect`, `priorite`,
+`raison`…), donc interrogeable librement. Les règles (mots-clés, expéditeurs
+automatiques) sont de la **donnée éditable** en haut du script, pensée pour être
+ajustée — et demain partagée avec GesEnt.
+
+### Filet de sécurité « zéro perte »
+Le déterministe ne peut pas comprendre le *sens* d'un message (ça, c'est le
+travail de l'IA). Il applique donc une règle prudente : tout ce qui touche à
+**l'argent, la sécurité, une commande, une réservation ou un contrat** est
+marqué `important` et **n'est jamais enterré en « basse »**, même s'il s'agit
+d'un courrier de masse (ex. une alerte bancaire ou crypto). Le `topo` les
+remonte avec un `★`. Conséquence assumée : il vaut mieux montrer un peu trop
+(une pub « soldes ») que cacher un mail critique. L'IA affinera.
+
+Tu peux forcer des expéditeurs à toujours remonter via `expediteurs_importants`
+dans la config (adresses ou domaines : `["binance.com", "ma-banque.be"]`).
 
 ## Autres commandes
 ```bash

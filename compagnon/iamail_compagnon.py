@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -51,6 +51,7 @@ CONFIG_DEFAUT = {
     "base_sqlite": "iamail_index.sqlite3",
     "deplacer": True,
     "mes_adresses": [],
+    "expediteurs_importants": [],
 }
 
 
@@ -593,6 +594,26 @@ def _domaine_marketing(dom):
         return True
     return any(("mail" in l or "news" in l or "mailing" in l) for l in labels)
 
+# Sujets « à lire absolument », même venant d'un robot : argent, sécurité,
+# transactions, contrats. Le déterministe ne doit JAMAIS les enterrer.
+SUJETS_IMPORTANTS = [
+    "compte", "virement", "transfert", "transfer", "iban", "retrait",
+    "depot", "taux", "interet", "assurance", "resiliation", "resilier", "prime",
+    "prelevement", "remboursement", "facture", "paiement", "impaye", "echeance",
+    "crypto", "bitcoin", "wallet", "portefeuille", "securite", "mot de passe",
+    "connexion", "verification", "authentification", "suspendu", "bloque",
+    "fraude", "piratage", "commande", "livraison", "colis", "retour",
+    "reservation", "confirmation", "contrat", "convocation", "rendez-vous",
+]
+# Fragments de domaines d'expéditeurs intrinsèquement importants.
+DOMAINES_IMPORTANTS = (
+    "binance", "coinbase", "kraken", "revolut", "paypal", "stripe", "wise",
+    "kbc", "belfius", "ing.", "bnpparibas", "fortis", "santander", "argenta",
+    "keytrade", "boursorama", "deutsche-bank", "deutschebank", "crelan",
+    "touring", "axa", "ethias", "baloise", "aginsurance", "p-v.be",
+    "bpost", "dpd", "gls", "ups.com", "dhl", "fedex", "myminfin", "minfin",
+)
+
 # (catégorie, mots-clés cherchés dans sujet + expéditeur, dé-accentués)
 REGLES_CATEGORIE = [
     ("facture",       ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]),
@@ -621,11 +642,25 @@ def _domaine(adresse):
     return adresse.split("@", 1)[1].lower() if adresse and "@" in adresse else ""
 
 
-def classer(h, mes_adresses):
+def _est_important(texte, categorie, de_spec, importants):
+    """Touche à l'argent / la sécurité / une transaction / un contrat ?"""
+    if categorie in ("facture", "devis", "commande", "livraison",
+                     "rendez_vous", "reclamation"):
+        return True
+    dom = _domaine(de_spec)
+    if de_spec in importants or dom in importants:
+        return True
+    if any(tok in dom for tok in DOMAINES_IMPORTANTS):
+        return True
+    return any(k in texte for k in SUJETS_IMPORTANTS)
+
+
+def classer(h, mes_adresses, importants=()):
     """
     h : dict d'en-têtes décodés (from, to, cc, subject, list_unsubscribe,
         list_id, precedence, auto_submitted, reply_to, return_path).
     mes_adresses : liste d'adresses de l'utilisateur (minuscules).
+    importants : adresses/domaines à toujours remonter (config).
     Renvoie un dict de classement.
     """
     de = (h.get("from") or "")
@@ -689,6 +724,9 @@ def classer(h, mes_adresses):
     else:
         urgence = "normale"
 
+    # --- Important « à lire » (argent, sécurité, transaction, contrat) -----
+    important = _est_important(texte, categorie, de_spec, importants)
+
     # --- Priorité (la synthèse qui sert le topo) --------------------------
     if pour_moi and not bulk and humain and urgence == "haute":
         priorite = "haute"
@@ -699,11 +737,18 @@ def classer(h, mes_adresses):
     else:
         priorite = "basse"
 
+    # FILET DE SÉCURITÉ : ce qui est important n'est JAMAIS enterré en "basse".
+    if important and priorite == "basse":
+        priorite = "normale"
+
     # --- Raison lisible ----------------------------------------------------
     bouts = []
     bouts.append("adressé à toi" if pour_moi else
                  ("juste en copie" if pour_moi is False else "diffusion/liste"))
     bouts.append("expéditeur humain" if humain else "expéditeur automatique")
+    if important:
+        bouts.append("⭐ à lire (" + categorie + ")" if categorie not in ("autre", "newsletter")
+                     else "⭐ à lire (argent/sécurité)")
     if bulk:
         bouts.append("courrier en masse")
     if urgence == "haute":
@@ -721,6 +766,7 @@ def classer(h, mes_adresses):
         "bulk": int(bulk),
         "automatique": int(automatique),
         "expediteur_humain": int(humain),
+        "important": int(important),
         "suspect": int(suspect),
         "priorite": priorite,
         "raison": raison,
@@ -731,8 +777,8 @@ def classer(h, mes_adresses):
 COLONNES_ANALYSE = {
     "categorie": "TEXT", "urgence": "TEXT", "pour_moi": "INTEGER",
     "bulk": "INTEGER", "automatique": "INTEGER", "expediteur_humain": "INTEGER",
-    "suspect": "INTEGER", "priorite": "TEXT", "raison": "TEXT", "confiance": "TEXT",
-    "analyse_source": "TEXT", "analyse_at": "TEXT",
+    "important": "INTEGER", "suspect": "INTEGER", "priorite": "TEXT",
+    "raison": "TEXT", "confiance": "TEXT", "analyse_source": "TEXT", "analyse_at": "TEXT",
 }
 
 
@@ -769,6 +815,7 @@ def cmd_analyser(args):
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
     mes = [a.lower() for a in cfg.get("mes_adresses", [])]
+    importants = {a.lower() for a in cfg.get("expediteurs_importants", [])}
     if not mes:
         print("⚠ 'mes_adresses' est vide : le « à moi / juste en copie » ne pourra "
               "pas être déterminé.\n  Lance d'abord :  suggerer-adresses")
@@ -788,17 +835,17 @@ def cmd_analyser(args):
             continue
         try:
             h = _entetes_du_eml(chemin)
-            c = classer(h, mes)
+            c = classer(h, mes, importants)
         except Exception:
             erreurs += 1
             continue
         cx.execute(
             """UPDATE messages SET categorie=?, urgence=?, pour_moi=?, bulk=?,
-               automatique=?, expediteur_humain=?, suspect=?, priorite=?, raison=?,
-               confiance=?, analyse_source=?, analyse_at=? WHERE message_id=?""",
+               automatique=?, expediteur_humain=?, important=?, suspect=?, priorite=?,
+               raison=?, confiance=?, analyse_source=?, analyse_at=? WHERE message_id=?""",
             (c["categorie"], c["urgence"], c["pour_moi"], c["bulk"],
-             c["automatique"], c["expediteur_humain"], c["suspect"], c["priorite"],
-             c["raison"], c["confiance"], "regles",
+             c["automatique"], c["expediteur_humain"], c["important"], c["suspect"],
+             c["priorite"], c["raison"], c["confiance"], "regles",
              datetime.now(timezone.utc).isoformat(), mid),
         )
         faits += 1
@@ -843,17 +890,19 @@ def cmd_topo(args):
     cx = connexion(cfg["base_sqlite"])
     n = args.nombre
     print("=== Ce qui semble demander ton attention ===\n")
+    # On inclut : ce qui t'est adressé hors masse, ET tout ce qui est important
+    # (argent, sécurité, commande, réservation…) même en courrier de masse.
     rows = cx.execute(
-        """SELECT date_mail, de_adresse, sujet, priorite, raison
+        """SELECT date_mail, de_adresse, sujet, priorite, important, raison
            FROM messages
-           WHERE pour_moi=1 AND bulk=0
+           WHERE (pour_moi=1 AND bulk=0) OR important=1
            ORDER BY CASE priorite WHEN 'haute' THEN 0 WHEN 'normale' THEN 1 ELSE 2 END,
-                    date_mail DESC
+                    important DESC, date_mail DESC
            LIMIT ?""", (n,)).fetchall()
     if not rows:
         print("Rien ne ressort (as-tu renseigné 'mes_adresses' puis lancé 'analyser' ?).")
-    for d, de, suj, prio, rai in rows:
-        marque = "‼" if prio == "haute" else "•"
+    for d, de, suj, prio, imp, rai in rows:
+        marque = "‼" if prio == "haute" else ("★" if imp else "•")
         print(f"{marque} [{(d or '')[:10]}] {(suj or '(sans objet)')[:60]}")
         print(f"    de {(de or '')[:40]} — {rai}")
     cx.close()
