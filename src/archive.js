@@ -145,6 +145,24 @@ async function trouverInbox() {
   return inboxes;
 }
 
+// Liste les messages d'un dossier, en gérant les deux signatures de l'API :
+// TB récent attend l'id du dossier, TB ancien l'objet dossier.
+async function listerMessages(dossier) {
+  const cible = (dossier && dossier.id != null) ? dossier.id : dossier;
+  try {
+    return await messenger.messages.list(cible);
+  } catch (e) {
+    try {
+      return await messenger.messages.list(dossier);
+    } catch (e2) {
+      if (messenger.messages.query) {
+        return await messenger.messages.query({ folderId: dossier.id });
+      }
+      throw e2;
+    }
+  }
+}
+
 // Relève tous les messages de la boîte de réception (premier test).
 async function releverBoitesReception(limite) {
   const comptes = await messenger.accounts.list();
@@ -154,7 +172,7 @@ async function releverBoitesReception(limite) {
   console.log("[IAMail] comptes:", comptes.length, "inbox:", inboxes.length);
 
   for (const inbox of inboxes) {
-    let page = await messenger.messages.list(inbox);
+    let page = await listerMessages(inbox);
     let continuer = true;
     while (continuer) {
       for (const entete of page.messages) {
