@@ -1,0 +1,6 @@
+{
+  "dossier_staging": "/Users/arnaud/Downloads/IAMail",
+  "dossier_destination": "/Volumes/serveur/ArchiveIAMail",
+  "base_sqlite": "/Volumes/serveur/ArchiveIAMail/iamail_index.sqlite3",
+  "deplacer": true
+}
