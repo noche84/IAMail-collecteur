@@ -26,18 +26,24 @@ Configuration (config.json) :
 """
 
 import argparse
+import email
+import email.header
+import email.utils
 import hashlib
 import json
+import mailbox
 import os
+import re
 import shutil
 import sqlite3
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -316,6 +322,204 @@ def cmd_search(args):
 
 
 # ----------------------------------------------------------------------------
+# Lecture directe du stock Thunderbird (mbox) — contourne le bac à sable
+# ----------------------------------------------------------------------------
+def _dec_entete(valeur):
+    """Décode un en-tête MIME (RFC 2047) en texte lisible."""
+    if not valeur:
+        return ""
+    morceaux = []
+    for txt, enc in email.header.decode_header(valeur):
+        if isinstance(txt, bytes):
+            try:
+                morceaux.append(txt.decode(enc or "utf-8", "replace"))
+            except (LookupError, TypeError):
+                morceaux.append(txt.decode("utf-8", "replace"))
+        else:
+            morceaux.append(txt)
+    return "".join(morceaux).replace("\r", " ").replace("\n", " ").strip()
+
+
+def _adresses(valeur):
+    """Liste d'adresses 'Nom <a@b>' d'un en-tête To/Cc."""
+    if not valeur:
+        return []
+    out = []
+    for nom, addr in email.utils.getaddresses([_dec_entete(valeur)]):
+        out.append((nom + " <" + addr + ">").strip() if nom else addr)
+    return [a for a in out if a]
+
+
+def _date_iso(msg):
+    try:
+        dt = email.utils.parsedate_to_datetime(msg.get("Date"))
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+    except (TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _sans_accents(s):
+    return "".join(c for c in unicodedata.normalize("NFD", s or "")
+                   if unicodedata.category(c) != "Mn")
+
+
+def _slug(texte, maxlen=60):
+    s = _sans_accents(texte or "").lower()
+    s = re.sub(r'[\\/:*?"<>|]+', "-", s)
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"[^a-z0-9.\-]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-.")
+    if len(s) > maxlen:
+        s = s[:maxlen].rstrip("-")
+    return s or "sans-objet"
+
+
+def _slug_expediteur(de):
+    m = re.search(r"<([^>]+)>", de or "")
+    addr = (m.group(1) if m else (de or "")).strip()
+    return _slug(addr.replace("@", "-at-"), 50) or "expediteur-inconnu"
+
+
+def _hash6(cle):
+    return hashlib.sha1((cle or "").encode("utf-8")).hexdigest()[:6]
+
+
+def _pieces_jointes(msg):
+    pj = []
+    for part in msg.walk():
+        if part.get_content_disposition() == "attachment":
+            try:
+                charge = part.get_payload(decode=True) or b""
+                taille = len(charge)
+            except Exception:
+                taille = None
+            pj.append({
+                "nom": _dec_entete(part.get_filename()) or "(sans nom)",
+                "type_mime": part.get_content_type(),
+                "taille": taille,
+            })
+    return pj
+
+
+def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
+    """Parcourt un mbox Thunderbird et archive chaque message. Lecture seule."""
+    chemin_mbox = str(chemin_mbox)
+    if not Path(chemin_mbox).exists():
+        print(f"[{NOM}] mbox introuvable : {chemin_mbox}", file=sys.stderr)
+        return {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0}
+
+    mbox = mailbox.mbox(chemin_mbox)  # ouverture read-only (pas de lock)
+    bilan = {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0}
+    dest_root = Path(cfg["dossier_destination"])
+    t0 = time.time()
+    try:
+        for cle in mbox.iterkeys():
+            if limite and bilan["lus"] >= limite:
+                break
+            bilan["lus"] += 1
+            try:
+                msg = mbox.get_message(cle)
+            except Exception:
+                bilan["erreur"] += 1
+                continue
+
+            mid = (_dec_entete(msg.get("Message-ID")) or "").strip()
+            if not mid:
+                brut0 = mbox.get_bytes(cle)
+                mid = "sansid:" + hashlib.sha1(brut0[:2000]).hexdigest()[:16]
+            if existe(cx, mid):
+                bilan["doublon"] += 1
+                continue
+
+            dt = _date_iso(msg)
+            dt_part = dt or datetime.now(timezone.utc)
+            sujet = _dec_entete(msg.get("Subject"))
+            de = _dec_entete(msg.get("From"))
+
+            base = (
+                f"{dt_part.year:04d}-{dt_part.month:02d}-{dt_part.day:02d}_"
+                f"{dt_part.hour:02d}{dt_part.minute:02d}{dt_part.second:02d}"
+                f"__{_slug_expediteur(de)}__{_slug(sujet)}__{_hash6(mid)}"
+            )
+            sous = f"{dt_part.year:04d}/{dt_part.month:02d}"
+            dossier_dest = dest_root / sous
+            dest_eml = nom_libre(dossier_dest, base, ".eml")
+            dest_json = dest_eml.with_suffix(".json")
+
+            meta = {
+                "message_id": mid if not mid.startswith("sansid:") else None,
+                "de_adresse": de,
+                "de_nom": de,
+                "destinataires": _adresses(msg.get("To")),
+                "copies": _adresses(msg.get("Cc")),
+                "date": dt.isoformat() if dt else None,
+                "sujet": sujet,
+                "dossier": dossier_logique,
+                "fichier_eml": str(dest_eml),
+                "pieces_jointes": _pieces_jointes(msg),
+                "collecte_at": datetime.now(timezone.utc).isoformat(),
+                "collecteur": {"nom": NOM, "version": VERSION, "source": "mbox"},
+            }
+
+            try:
+                ecrire_atomique(mbox.get_bytes(cle), dest_eml)
+                ecrire_atomique(
+                    json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8"),
+                    dest_json,
+                )
+            except Exception as e:
+                print(f"[{NOM}] échec écriture {base}: {e}", file=sys.stderr)
+                bilan["erreur"] += 1
+                continue
+
+            cx.execute(
+                """INSERT OR IGNORE INTO messages
+                   (message_id, de_adresse, destinataires, copies, date_mail, sujet,
+                    fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (mid, de,
+                 json.dumps(meta["destinataires"], ensure_ascii=False),
+                 json.dumps(meta["copies"], ensure_ascii=False),
+                 meta["date"], sujet, str(dest_eml), str(dest_json),
+                 json.dumps(meta["pieces_jointes"], ensure_ascii=False),
+                 dossier_logique, meta["collecte_at"]),
+            )
+            bilan["archive"] += 1
+            if bilan["archive"] % 200 == 0:
+                cx.commit()
+                print(f"[{NOM}] … {bilan['archive']} archivés "
+                      f"({bilan['lus']} lus, {time.time()-t0:.0f}s)")
+    finally:
+        cx.commit()
+        mbox.close()
+    print(f"[{NOM}] import mbox : {bilan} en {time.time()-t0:.0f}s")
+    return bilan
+
+
+def cmd_import(args):
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    sources = []
+    if args.mbox:
+        sources = [args.mbox]
+    else:
+        sources = cfg.get("mbox_sources", [])
+    if not sources:
+        raise SystemExit(
+            "Indiquez un mbox : --mbox <chemin>  ou  'mbox_sources' dans la config."
+        )
+    try:
+        for src in sources:
+            importer_mbox(cfg, cx, src, limite=args.limite)
+    finally:
+        cx.close()
+
+
+# ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
 def main(argv=None):
@@ -328,8 +532,13 @@ def main(argv=None):
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_init)
 
-    s = sub.add_parser("ingest", help="une passe d'ingestion")
+    s = sub.add_parser("ingest", help="une passe d'ingestion (dossier relais)")
     s.set_defaults(func=cmd_ingest)
+
+    s = sub.add_parser("import", help="importe un mbox Thunderbird (stock local)")
+    s.add_argument("--mbox", help="chemin du fichier mbox (sinon 'mbox_sources' de la config)")
+    s.add_argument("--limite", type=int, default=None, help="nb max de messages (test)")
+    s.set_defaults(func=cmd_import)
 
     s = sub.add_parser("watch", help="surveillance continue")
     s.add_argument("--intervalle", type=int, default=10, help="secondes")

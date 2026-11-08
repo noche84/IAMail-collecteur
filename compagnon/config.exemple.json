@@ -1,6 +1,9 @@
 {
-  "dossier_staging": "/Users/arnaud/Downloads/IAMail",
-  "dossier_destination": "/Volumes/serveur/ArchiveIAMail",
-  "base_sqlite": "/Volumes/serveur/ArchiveIAMail/iamail_index.sqlite3",
-  "deplacer": true
+  "dossier_staging": "/home/asus/IAMail",
+  "dossier_destination": "/media/serveur/ArchiveIAMail",
+  "base_sqlite": "/media/serveur/ArchiveIAMail/iamail_index.sqlite3",
+  "deplacer": true,
+  "mbox_sources": [
+    "/home/asus/.var/app/org.mozilla.thunderbird_esr/.thunderbird/kb7fqa9k.default-esr/ImapMail/imap.gmail.com/INBOX"
+  ]
 }

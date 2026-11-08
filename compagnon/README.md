@@ -39,6 +39,30 @@ python3 iamail_compagnon.py --config config.json ingest
 python3 iamail_compagnon.py --config config.json watch --intervalle 10
 ```
 
+## Import direct du stock Thunderbird (mbox) — recommandé
+Sur une installation Thunderbird **Flatpak/Snap**, l'extension ne peut pas
+écrire hors de son bac à sable (l'API de téléchargement échoue en silence).
+Le compagnon, lui, lit **directement** le fichier mbox du profil, ce qui
+règle le problème et permet d'archiver **tout l'historique en une passe**.
+
+Trouver le mbox :
+```bash
+find ~ ~/.var/app ~/snap -maxdepth 8 -path '*ImapMail*' -iname 'INBOX' 2>/dev/null
+```
+Renseigner son chemin dans `mbox_sources` (config.json), puis :
+```bash
+# Test prudent (50 messages)
+python3 iamail_compagnon.py --config config.json import --limite 50
+# Import complet (tout l'historique)
+python3 iamail_compagnon.py --config config.json import
+```
+- **Lecture seule** : le mbox n'est jamais modifié. Relancer l'import est sûr
+  (dédoublonnage par Message-ID) : seuls les nouveaux messages sont ajoutés.
+- Prévoir, sur la destination, **l'espace équivalent au mbox** (un INBOX Gmail
+  peut peser plusieurs Go).
+- Idéalement lancer quand Thunderbird n'écrit pas activement ; au besoin, un
+  message tronqué en fin de fichier sera rattrapé au passage suivant.
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats
