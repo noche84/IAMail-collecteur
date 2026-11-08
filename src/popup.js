@@ -5,6 +5,8 @@ async function rafraichir() {
   if (!r || !r.ok) return;
   document.getElementById("total").textContent = r.etat.total || 0;
   document.getElementById("dossier").textContent = (r.reglages && r.reglages.dossierBase) || "IAMail";
+  document.getElementById("chemin").textContent =
+    r.etat.dossierReel ? ("Emplacement réel : " + r.etat.dossierReel) : "";
   const d = r.etat.dernier;
   document.getElementById("dernier").textContent =
     d ? ("Dernier : " + d.sujet.slice(0, 40)) : "";

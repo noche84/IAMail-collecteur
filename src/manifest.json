@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "IAMail — Collecteur Thunderbird",
   "description": "Relève les nouveaux messages et les archive en .eml + .json nommés (v0, hors ligne, lecture seule).",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": "Arnaud François",
   "browser_specific_settings": {
     "gecko": {

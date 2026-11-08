@@ -34,7 +34,7 @@ async function ecrireFichier(cheminRelatif, contenu, typeMime) {
   const blob = new Blob([contenu], { type: typeMime || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   try {
-    await messenger.downloads.download({
+    return await messenger.downloads.download({
       url,
       filename: cheminRelatif,
       conflictAction: "uniquify",
@@ -44,6 +44,17 @@ async function ecrireFichier(cheminRelatif, contenu, typeMime) {
     // Laisse le temps au téléchargement de démarrer avant de révoquer l'URL.
     setTimeout(() => URL.revokeObjectURL(url), 15000);
   }
+}
+
+// Retrouve le dossier réel où un téléchargement a été écrit (chemin absolu).
+async function dossierReelDe(idTelechargement) {
+  try {
+    const res = await messenger.downloads.search({ id: idTelechargement });
+    if (res && res[0] && res[0].filename) {
+      return res[0].filename.replace(/[\\/][^\\/]*$/, "");
+    }
+  } catch (e) { /* ignore */ }
+  return null;
 }
 
 // Construit l'objet .json (métadonnées — l'index cherchable).
@@ -91,12 +102,16 @@ async function archiverMessage(entete) {
     const noms = construireNoms(entete, reglages.dossierBase, reglages.maxSujet);
     const meta = await construireMetadonnees(entete, noms.cheminEml);
 
-    await ecrireFichier(noms.cheminEml, brut, "message/rfc822");
+    const idEml = await ecrireFichier(noms.cheminEml, brut, "message/rfc822");
     await ecrireFichier(noms.cheminJson, JSON.stringify(meta, null, 2), "application/json");
 
     etat.vus[cle] = true;
     etat.total = (etat.total || 0) + 1;
     etat.dernier = { sujet: entete.subject || "", at: new Date().toISOString() };
+    if (!etat.dossierReel) {
+      const dr = await dossierReelDe(idEml);
+      if (dr) etat.dossierReel = dr;
+    }
     await ecrireEtat(etat);
     return "archive";
   } catch (e) {
