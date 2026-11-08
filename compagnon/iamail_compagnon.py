@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -538,6 +538,61 @@ MOTS_URGENTS = [
     "delai", "impaye", "mise en demeure", "action requise", "a traiter",
 ]
 
+# Domaines de messagerie « grand public » : un envoi depuis ces domaines est
+# probablement une personne (et non une marque qui diffuse en masse).
+FREEMAIL = {
+    "gmail.com", "googlemail.com", "outlook.com", "outlook.be", "hotmail.com",
+    "hotmail.be", "hotmail.fr", "live.com", "live.be", "live.fr", "msn.com",
+    "yahoo.com", "yahoo.fr", "yahoo.be", "icloud.com", "me.com", "mac.com",
+    "proton.me", "protonmail.com", "gmx.com", "gmx.net", "gmx.be",
+    "skynet.be", "telenet.be", "proximus.be", "voo.be", "scarlet.be",
+    "belgacom.net", "base.be", "orange.fr", "free.fr", "laposte.net", "wanadoo.fr",
+}
+
+# Étiquettes de domaine typiques des plateformes d'emailing de masse.
+MARKETING_LABELS = {
+    "mail", "email", "emails", "e", "m", "mg", "news", "newsletter", "mailing",
+    "sendgrid", "mailchimp", "mailgun", "sparkpost", "amazonses", "mailjet",
+    "sendinblue", "klaviyo", "s", "info", "promo", "promos",
+}
+
+# Mots dans la partie locale qui trahissent un envoi automatique / générique.
+LOCAL_AUTO_INDICES = (
+    "noreply", "no-reply", "donotreply", "do_not_reply", "do-not-reply",
+    "nepasrepondre", "ne-pas-repondre", "mailer", "bounce", "notification",
+    "newsletter", "mailing", "automated", "auto-", "-auto", "reply-",
+)
+# Parties locales génériques (non personnelles) même sur un domaine propre.
+LOCAL_GENERIQUE = {
+    "info", "contact", "team", "hello", "bonjour", "support", "service",
+    "services", "shop", "boutique", "news", "alerts", "alert", "admin",
+    "noreply", "no-reply", "sav", "client", "clients", "rewardclub", "club",
+}
+
+
+def _expediteur_humain(spec, local):
+    """Heuristique : l'expéditeur ressemble-t-il à une personne ?"""
+    if not spec:
+        return False
+    dom = _domaine(spec)
+    if local in EXPEDITEURS_AUTO or local in LOCAL_GENERIQUE:
+        return False
+    if any(t in local for t in LOCAL_AUTO_INDICES):
+        return False
+    if dom in FREEMAIL:
+        return True                      # personne sur une messagerie grand public
+    # Domaine propre : humain seulement si la partie locale ressemble à prénom.nom
+    return bool(re.match(r"^[a-z]+([._-][a-z]+)+$", local))
+
+
+def _domaine_marketing(dom):
+    if not dom or dom in FREEMAIL:
+        return False
+    labels = dom.split(".")
+    if set(labels) & MARKETING_LABELS:
+        return True
+    return any(("mail" in l or "news" in l or "mailing" in l) for l in labels)
+
 # (catégorie, mots-clés cherchés dans sujet + expéditeur, dé-accentués)
 REGLES_CATEGORIE = [
     ("facture",       ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]),
@@ -583,18 +638,15 @@ def classer(h, mes_adresses):
     cc = _adresses_spec(h.get("cc"))
     mes = set(mes_adresses or [])
 
-    # --- Automatique / en masse -------------------------------------------
+    # --- Humain vs automatique / en masse ---------------------------------
+    humain = _expediteur_humain(de_spec, de_local)
     bulk = bool(
         h.get("list_unsubscribe") or h.get("list_id")
         or (h.get("precedence", "").lower() in ("bulk", "list", "junk"))
         or de_local in EXPEDITEURS_AUTO
+        or _domaine_marketing(_domaine(de_spec))
     )
-    automatique = bool(
-        (h.get("auto_submitted", "").lower() not in ("", "no"))
-        or de_local in EXPEDITEURS_AUTO
-        or (h.get("return_path", "").strip() in ("<>", ""))
-        and (h.get("auto_submitted") or h.get("list_unsubscribe"))
-    )
+    automatique = (not humain) or bulk
 
     # --- À moi / juste en copie / liste -----------------------------------
     if mes & set(to):
@@ -625,18 +677,25 @@ def classer(h, mes_adresses):
     )
 
     # --- Urgence -----------------------------------------------------------
+    # Le vocabulaire d'urgence ne compte que s'il vient d'un humain : sinon
+    # c'est du marketing qui crie « urgent / rappel / échéance ».
+    a_mot_urgent = any(m in texte for m in MOTS_URGENTS)
     if bulk:
         urgence = "basse"
-    elif any(m in texte for m in MOTS_URGENTS):
+    elif a_mot_urgent and humain:
         urgence = "haute"
+    elif a_mot_urgent:
+        urgence = "normale"            # mot d'urgence mais expéditeur automatique
     else:
         urgence = "normale"
 
     # --- Priorité (la synthèse qui sert le topo) --------------------------
-    if pour_moi and not bulk and urgence == "haute":
+    if pour_moi and not bulk and humain and urgence == "haute":
         priorite = "haute"
-    elif pour_moi and not bulk:
+    elif pour_moi and not bulk and humain:
         priorite = "normale"
+    elif pour_moi and not bulk:
+        priorite = "normale"           # adressé à toi, émetteur auto (transactionnel)
     else:
         priorite = "basse"
 
@@ -644,10 +703,13 @@ def classer(h, mes_adresses):
     bouts = []
     bouts.append("adressé à toi" if pour_moi else
                  ("juste en copie" if pour_moi is False else "diffusion/liste"))
+    bouts.append("expéditeur humain" if humain else "expéditeur automatique")
     if bulk:
         bouts.append("courrier en masse")
     if urgence == "haute":
         bouts.append("marqueur d'urgence")
+    elif a_mot_urgent and not humain:
+        bouts.append("urgence marketing (ignorée)")
     if suspect:
         bouts.append("⚠ expéditeur de réponse différent")
     raison = ", ".join(bouts)
@@ -658,6 +720,7 @@ def classer(h, mes_adresses):
         "pour_moi": None if pour_moi is None else int(pour_moi),
         "bulk": int(bulk),
         "automatique": int(automatique),
+        "expediteur_humain": int(humain),
         "suspect": int(suspect),
         "priorite": priorite,
         "raison": raison,
@@ -667,8 +730,8 @@ def classer(h, mes_adresses):
 
 COLONNES_ANALYSE = {
     "categorie": "TEXT", "urgence": "TEXT", "pour_moi": "INTEGER",
-    "bulk": "INTEGER", "automatique": "INTEGER", "suspect": "INTEGER",
-    "priorite": "TEXT", "raison": "TEXT", "confiance": "TEXT",
+    "bulk": "INTEGER", "automatique": "INTEGER", "expediteur_humain": "INTEGER",
+    "suspect": "INTEGER", "priorite": "TEXT", "raison": "TEXT", "confiance": "TEXT",
     "analyse_source": "TEXT", "analyse_at": "TEXT",
 }
 
@@ -731,11 +794,12 @@ def cmd_analyser(args):
             continue
         cx.execute(
             """UPDATE messages SET categorie=?, urgence=?, pour_moi=?, bulk=?,
-               automatique=?, suspect=?, priorite=?, raison=?, confiance=?,
-               analyse_source=?, analyse_at=? WHERE message_id=?""",
+               automatique=?, expediteur_humain=?, suspect=?, priorite=?, raison=?,
+               confiance=?, analyse_source=?, analyse_at=? WHERE message_id=?""",
             (c["categorie"], c["urgence"], c["pour_moi"], c["bulk"],
-             c["automatique"], c["suspect"], c["priorite"], c["raison"],
-             c["confiance"], "regles", datetime.now(timezone.utc).isoformat(), mid),
+             c["automatique"], c["expediteur_humain"], c["suspect"], c["priorite"],
+             c["raison"], c["confiance"], "regles",
+             datetime.now(timezone.utc).isoformat(), mid),
         )
         faits += 1
         if faits % 2000 == 0:
