@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px system-ui, sans-serif; margin: 0; padding: 12px; width: 280px; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    .stat { color: #444; margin: 2px 0; }
+    .stat b { color: #000; }
+    button { width: 100%; padding: 8px; margin-top: 8px; cursor: pointer;
+             border: 1px solid #888; border-radius: 6px; background: #f3f3f3; }
+    button:hover { background: #e8e8e8; }
+    #bilan { margin-top: 8px; white-space: pre-line; color: #0a0; min-height: 1.2em; }
+    a { display: inline-block; margin-top: 10px; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #222; color: #eee; }
+      .stat { color: #ccc; } .stat b { color: #fff; }
+      button { background: #333; color: #eee; border-color: #555; }
+      button:hover { background: #3a3a3a; }
+    }
+  </style>
+</head>
+<body>
+  <h1>IAMail — collecteur</h1>
+  <div class="stat">Archivés au total : <b id="total">…</b></div>
+  <div class="stat">Dossier : <b id="dossier">…</b> (sous Téléchargements)</div>
+  <div class="stat" id="dernier"></div>
+  <button id="relever">Relever la boîte de réception</button>
+  <div id="bilan"></div>
+  <a href="#" id="options">Ouvrir les réglages</a>
+  <script src="popup.js"></script>
+</body>
+</html>

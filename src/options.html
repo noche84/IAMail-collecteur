@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 520px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 18px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input[type=text], input[type=number] { width: 100%; padding: 7px; box-sizing: border-box; }
+    .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    .row input { width: auto; }
+    .hint { color: #666; font-size: 12px; margin-top: 4px; }
+    button { margin-top: 18px; padding: 9px 16px; cursor: pointer; }
+    #ok { color: #0a0; margin-left: 10px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #222; color: #eee; } .hint { color: #aaa; }
+      input { background: #333; color: #eee; border: 1px solid #555; }
+    }
+  </style>
+</head>
+<body>
+  <h1>IAMail — réglages</h1>
+
+  <label for="dossierBase">Sous-dossier d'archivage</label>
+  <input type="text" id="dossierBase" placeholder="IAMail">
+  <div class="hint">Relatif au dossier Téléchargements de Thunderbird. Arborescence créée : &lt;dossier&gt;/AAAA/MM/. Pour viser une part réseau, il faudra le compagnon natif (étape suivante).</div>
+
+  <label for="maxSujet">Longueur max. du sujet dans le nom de fichier</label>
+  <input type="number" id="maxSujet" min="20" max="120" step="5">
+
+  <div class="row">
+    <input type="checkbox" id="archiver">
+    <label for="archiver" style="margin:0;font-weight:600;">Archiver les nouveaux messages automatiquement</label>
+  </div>
+
+  <div>
+    <button id="enregistrer">Enregistrer</button>
+    <span id="ok"></span>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
