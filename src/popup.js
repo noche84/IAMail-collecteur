@@ -10,6 +10,8 @@ async function rafraichir() {
   const d = r.etat.dernier;
   document.getElementById("dernier").textContent =
     d ? ("Dernier : " + d.sujet.slice(0, 40)) : "";
+  document.getElementById("erreur").textContent =
+    r.etat.derniereErreur ? ("Erreur : " + r.etat.derniereErreur) : "";
 }
 
 document.getElementById("relever").addEventListener("click", async () => {
@@ -18,7 +20,7 @@ document.getElementById("relever").addEventListener("click", async () => {
   btn.disabled = true;
   bilan.textContent = "Relève en cours…";
   try {
-    const r = await messenger.runtime.sendMessage({ cmd: "relever-inbox", limite: 200 });
+    const r = await messenger.runtime.sendMessage({ cmd: "relever-inbox", limite: 25 });
     if (r && r.ok) {
       const b = r.bilan;
       bilan.textContent =

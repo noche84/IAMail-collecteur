@@ -21,40 +21,76 @@ async function lireReglages() {
 
 async function lireEtat() {
   const r = await messenger.storage.local.get("etat");
-  return Object.assign({ vus: {}, total: 0, dernier: null }, r.etat || {});
+  return Object.assign(
+    { vus: {}, total: 0, dernier: null, dossierReel: null, derniereErreur: null, schema: 0 },
+    r.etat || {}
+  );
 }
 
 async function ecrireEtat(etat) {
   await messenger.storage.local.set({ etat });
 }
 
-// Écrit un contenu (string) comme fichier, via l'API de téléchargement.
-// Le chemin est relatif au dossier Téléchargements ; les sous-dossiers sont créés.
-async function ecrireFichier(cheminRelatif, contenu, typeMime) {
-  const blob = new Blob([contenu], { type: typeMime || "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  try {
-    return await messenger.downloads.download({
-      url,
-      filename: cheminRelatif,
-      conflictAction: "uniquify",
-      saveAs: false
-    });
-  } finally {
-    // Laisse le temps au téléchargement de démarrer avant de révoquer l'URL.
-    setTimeout(() => URL.revokeObjectURL(url), 15000);
+// Migration : les versions < 0.1.5 marquaient "vu" même quand le téléchargement
+// échouait. On repart donc d'une ardoise propre une seule fois.
+async function migrer() {
+  const etat = await lireEtat();
+  if (etat.schema !== 2) {
+    await ecrireEtat({ vus: {}, total: 0, dernier: null, dossierReel: null, derniereErreur: null, schema: 2 });
   }
 }
 
-// Retrouve le dossier réel où un téléchargement a été écrit (chemin absolu).
-async function dossierReelDe(idTelechargement) {
-  try {
-    const res = await messenger.downloads.search({ id: idTelechargement });
-    if (res && res[0] && res[0].filename) {
-      return res[0].filename.replace(/[\\/][^\\/]*$/, "");
+// Attend la fin d'un téléchargement : renvoie { ok, path?, erreur? }.
+function attendreFin(id) {
+  return new Promise((resolve) => {
+    let regle = false;
+    const finir = (v) => {
+      if (regle) return;
+      regle = true;
+      try { messenger.downloads.onChanged.removeListener(onChanged); } catch (e) {}
+      resolve(v);
+    };
+    function onChanged(delta) {
+      if (delta.id !== id || !delta.state) return;
+      if (delta.state.current === "complete") finir({ ok: true });
+      else if (delta.state.current === "interrupted") {
+        finir({ ok: false, erreur: (delta.error && delta.error.current) || "interrupted" });
+      }
     }
-  } catch (e) { /* ignore */ }
-  return null;
+    messenger.downloads.onChanged.addListener(onChanged);
+    // Filet : l'événement a pu passer avant l'abonnement -> on sonde.
+    setTimeout(async () => {
+      try {
+        const [it] = await messenger.downloads.search({ id });
+        if (it && it.state === "complete") finir({ ok: true, path: it.filename });
+        else if (it && it.state === "interrupted") finir({ ok: false, erreur: it.error || "interrupted" });
+        else finir({ ok: false, erreur: "délai dépassé (" + (it ? it.state : "introuvable") + ")" });
+      } catch (e) {
+        finir({ ok: false, erreur: String(e) });
+      }
+    }, 10000);
+  });
+}
+
+// Écrit un fichier et ATTEND sa fin. Renvoie { ok, path?, erreur? }.
+async function ecrireFichier(cheminRelatif, contenu, typeMime) {
+  const blob = new Blob([contenu], { type: typeMime || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  let id = null;
+  try {
+    id = await messenger.downloads.download({
+      url, filename: cheminRelatif, conflictAction: "uniquify", saveAs: false
+    });
+  } catch (e) {
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    return { ok: false, erreur: "download(): " + String(e && e.message || e) };
+  }
+  const res = await attendreFin(id);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (res.ok && !res.path) {
+    try { const [it] = await messenger.downloads.search({ id }); if (it) res.path = it.filename; } catch (e) {}
+  }
+  return res;
 }
 
 // Construit l'objet .json (métadonnées — l'index cherchable).
@@ -102,19 +138,35 @@ async function archiverMessage(entete) {
     const noms = construireNoms(entete, reglages.dossierBase, reglages.maxSujet);
     const meta = await construireMetadonnees(entete, noms.cheminEml);
 
-    const idEml = await ecrireFichier(noms.cheminEml, brut, "message/rfc822");
-    await ecrireFichier(noms.cheminJson, JSON.stringify(meta, null, 2), "application/json");
+    const r1 = await ecrireFichier(noms.cheminEml, brut, "message/rfc822");
+    if (!r1.ok) {
+      etat.derniereErreur = "écriture .eml : " + r1.erreur;
+      await ecrireEtat(etat);
+      console.error("[IAMail] échec .eml", cle, r1.erreur);
+      return "erreur";
+    }
+    const r2 = await ecrireFichier(noms.cheminJson, JSON.stringify(meta, null, 2), "application/json");
+    if (!r2.ok) {
+      etat.derniereErreur = "écriture .json : " + r2.erreur;
+      await ecrireEtat(etat);
+      console.error("[IAMail] échec .json", cle, r2.erreur);
+      return "erreur";
+    }
 
+    // Les deux fichiers sont réellement écrits : on peut marquer "vu".
     etat.vus[cle] = true;
     etat.total = (etat.total || 0) + 1;
     etat.dernier = { sujet: entete.subject || "", at: new Date().toISOString() };
-    if (!etat.dossierReel) {
-      const dr = await dossierReelDe(idEml);
-      if (dr) etat.dossierReel = dr;
+    etat.derniereErreur = null;
+    if (!etat.dossierReel && r1.path) {
+      etat.dossierReel = r1.path.replace(/[\\/][^\\/]*$/, "");
     }
     await ecrireEtat(etat);
     return "archive";
   } catch (e) {
+    const etat2 = await lireEtat();
+    etat2.derniereErreur = String(e && e.message || e);
+    await ecrireEtat(etat2);
     console.error("[IAMail] échec archivage", cle, e);
     return "erreur";
   }
@@ -180,6 +232,7 @@ async function listerMessages(dossier) {
 
 // Relève tous les messages de la boîte de réception (premier test).
 async function releverBoitesReception(limite) {
+  await migrer();
   const comptes = await messenger.accounts.list();
   const inboxes = await trouverInbox();
   let archives = 0, doublons = 0, erreurs = 0, examines = 0;
