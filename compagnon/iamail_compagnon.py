@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1307,15 +1307,24 @@ CASES_COCKPIT = [("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"
                  ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
 
 
-def cockpit_liste(db, non_lus_seulement):
+def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     cx = sqlite3.connect(db)
-    cond = "etat IS NULL AND ia_source IS NOT NULL"
-    if non_lus_seulement:
-        cond += " AND (non_lu=1 OR non_lu IS NULL)"
+    conds = ["ia_source IS NOT NULL"]
+    params = []
+    if vue == "reporte":
+        conds.append("etat='reporte'")
+    else:
+        conds.append("etat IS NULL")
+        if depuis:
+            conds.append("date_mail >= ?")
+            params.append(depuis)
+        elif non_lus:
+            conds.append("(non_lu=1 OR non_lu IS NULL)")
     rows = cx.execute(
         f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
             ia_echeance, ia_priorite, ia_pression, ia_question, non_lu
-            FROM messages WHERE {cond} ORDER BY date_mail DESC""").fetchall()
+            FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC""",
+        params).fetchall()
     cx.close()
     cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance",
             "priorite", "pression", "question", "non_lu"]
@@ -1355,8 +1364,10 @@ def faire_cockpit_handler(db):
                 self.wfile.write(page)
             elif u.path == "/api/liste":
                 q = parse_qs(u.query)
+                vue = q.get("vue", ["atraiter"])[0]
                 non_lus = q.get("nonlus", ["0"])[0] == "1"
-                self._json({"cases": cockpit_liste(db, non_lus)})
+                depuis = (q.get("depuis", [""])[0] or "").strip() or None
+                self._json({"cases": cockpit_liste(db, vue, non_lus, depuis)})
             else:
                 self._json({"erreur": "inconnu"}, 404)
 
@@ -1364,9 +1375,10 @@ def faire_cockpit_handler(db):
             c = self._corps()
             mid = c.get("id")
             if self.path == "/api/action":
+                e = c.get("etat")
+                e = None if e in (None, "", "a_traiter") else e
                 cx = sqlite3.connect(db)
-                cx.execute("UPDATE messages SET etat=? WHERE message_id=?",
-                           (c.get("etat"), mid))
+                cx.execute("UPDATE messages SET etat=? WHERE message_id=?", (e, mid))
                 cx.commit()
                 cx.close()
                 self._json({"ok": True})
@@ -1390,15 +1402,15 @@ PAGE_COCKPIT = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--tx:#1a1a1a;--mut:#666;--line:#e5e7eb;
---haute:#d92d20;--normale:#1570ef;--basse:#667085;}
+--haute:#d92d20;--normale:#1570ef;--basse:#667085;--acc:#1570ef;}
 @media(prefers-color-scheme:dark){:root{--bg:#16181d;--card:#20242b;--tx:#e8e8e8;
 --mut:#9aa1ac;--line:#30353d;}}
 *{box-sizing:border-box}body{font:14px system-ui,sans-serif;margin:0;background:var(--bg);color:var(--tx)}
-header{position:sticky;top:0;background:var(--bg);padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-h1{font-size:17px;margin:0}main{max-width:820px;margin:0 auto;padding:16px}
-.case{margin:18px 0 6px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0;border-left:4px solid var(--basse)}
-.card.haute{border-left-color:var(--haute)}.card.normale{border-left-color:var(--normale)}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:17px;margin:0}main{max-width:840px;margin:0 auto;padding:16px}
+.case{margin:20px 0 6px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
+.item{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0;border-left:4px solid var(--basse)}
+.item.haute{border-left-color:var(--haute)}.item.normale{border-left-color:var(--normale)}
 .tache{font-weight:600}.sujet{color:var(--mut);font-size:13px;margin:2px 0}
 .meta{color:var(--mut);font-size:12px;margin-top:4px}
 .ech{display:inline-block;background:var(--line);border-radius:5px;padding:1px 7px;font-size:12px;margin-left:6px}
@@ -1406,50 +1418,102 @@ h1{font-size:17px;margin:0}main{max-width:820px;margin:0 auto;padding:16px}
 .badge{font-size:11px;border:1px solid var(--line);border-radius:5px;padding:0 6px;margin-left:6px;color:var(--mut)}
 .btns{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
 button{font:13px system-ui;padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--tx);cursor:pointer}
-button:hover{background:var(--bg)}
-button.ok{border-color:#12b76a;color:#12b76a}button.pri{border-color:var(--normale);color:var(--normale)}
-.toggle{margin-left:auto;font-size:13px;color:var(--mut)}#vide{color:var(--mut);padding:40px 0;text-align:center}
+button:hover{filter:brightness(.97)}button.ok{border-color:#12b76a;color:#12b76a}button.pri{border-color:var(--normale);color:var(--normale)}
+.group{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:8px 0;border-left:4px solid var(--basse);overflow:hidden}
+.group.haute{border-left-color:var(--haute)}.group.normale{border-left-color:var(--normale)}
+.grphead{padding:11px 14px;font-weight:600;border-bottom:1px solid var(--line)}
+.row{padding:9px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row:last-child{border-bottom:0}.row .who{flex:1;min-width:160px;color:var(--mut);font-size:13px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;border-radius:0;padding:6px 12px}.seg button.on{background:var(--acc);color:#fff}
+.ctl{font-size:13px;color:var(--mut);display:flex;align-items:center;gap:6px}
+.spacer{margin-left:auto}#vide{color:var(--mut);padding:50px 0;text-align:center;font-size:15px}
+input[type=date]{font:13px system-ui;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--tx)}
 </style></head><body>
-<header><h1>🛩️ IAMail — cockpit</h1><span id="compte" class="badge"></span>
-<label class="toggle"><input type="checkbox" id="nonlus"> non-lus seulement</label></header>
+<header>
+  <h1>🛩️ IAMail</h1>
+  <div class="seg"><button id="v-atraiter" class="on">À traiter</button><button id="v-reporte">Reportés</button></div>
+  <span id="compte" class="badge"></span>
+  <label class="ctl" id="l-nonlus"><input type="checkbox" id="nonlus"> non-lus seulement</label>
+  <label class="ctl spacer">Retour d'absence depuis <input type="date" id="depuis"></label>
+</header>
 <main id="main"></main>
 <script>
 const api=(p,b)=>fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
-let total=0;
-function carte(it){
-  const d=document.createElement('div');d.className='card '+(it.priorite||'basse');
-  const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">⏱ ${it.echeance}</span>`:'';
-  const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
-  const q=it.question?`<div class="q">❓ ${it.question}</div>`:'';
-  d.innerHTML=`<div class="tache">${(it.tache||it.resume||'(sans objet)')}${ech}${nl}</div>
-   <div class="sujet">${it.sujet||''}</div>
-   <div class="meta">${it.de||''}</div>${q}
-   <div class="btns">
+const esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let state={vue:'atraiter',nonlus:false,depuis:''},total=0;
+const cle=it=>(it.tache||it.resume||it.sujet||'').trim().toLowerCase();
+
+function btns(it){
+  const rem=state.vue==='reporte'
+    ? `<button data-a="remettre">Remettre à traiter</button>`
+    : `<button data-a="reporte">Reporter</button>`;
+  return `<div class="btns">
      <button class="pri" data-a="ouvrir">Ouvrir l'email</button>
      <button data-a="deleguer">Déléguer…</button>
-     <button class="ok" data-a="traite">Traité</button>
-     <button data-a="reporte">Reporter</button>
-   </div>`;
-  d.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,d));
-  return d;
+     <button class="ok" data-a="traite">Traité</button>${rem}</div>`;
 }
-async function action(it,a,card){
-  if(a==='ouvrir'){await api('/api/ouvrir',{id:it.id});return;}
-  if(a==='deleguer'){await api('/api/ouvrir',{id:it.id});
-     alert("L'email s'ouvre dans ton logiciel : fais « Transférer », ajoute le collègue et ta note.");return;}
-  await api('/api/action',{id:it.id,etat:a});card.remove();total--;maj();
+function brancher(el,it){el.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,el));}
+
+function carte(it){
+  const d=document.createElement('div');d.className='item '+(it.priorite||'basse');
+  const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">⏱ ${esc(it.echeance)}</span>`:'';
+  const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
+  const q=it.question?`<div class="q">❓ ${esc(it.question)}</div>`:'';
+  d.innerHTML=`<div class="tache">${esc(it.tache||it.resume||'(sans objet)')}${ech}${nl}</div>
+   <div class="sujet">${esc(it.sujet)}</div><div class="meta">${esc(it.de)}</div>${q}${btns(it)}`;
+  brancher(d,it);return d;
 }
-function maj(){document.getElementById('compte').textContent=total+' à traiter';
-  if(total<=0)document.getElementById('main').innerHTML='<div id="vide">🎉 Boîte traitée — rien en attente.</div>';}
+function groupe(items){
+  const g=document.createElement('div');g.className='group '+(items[0].priorite||'basse');
+  const head=document.createElement('div');head.className='grphead';
+  head.innerHTML=esc(items[0].tache||items[0].resume||'(sans objet)')+` <span class="badge">×${items.length}</span>`;
+  g.appendChild(head);
+  for(const it of items){
+    const r=document.createElement('div');r.className='item row';r.style.border='0';r.style.margin='0';r.style.borderRadius='0';
+    r.classList.remove('haute','normale');
+    const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
+    r.innerHTML=`<div class="who">${esc(it.de)} — ${esc(it.sujet)}${nl}</div>${btns(it)}`;
+    brancher(r,it);g.appendChild(r);
+  }
+  return g;
+}
+async function action(it,a,el){
+  if(a==='ouvrir'||a==='deleguer'){await api('/api/ouvrir',{id:it.id});
+     if(a==='deleguer')alert("L'email s'ouvre dans ton logiciel : fais « Transférer », ajoute le collègue et ta note.");
+     return;}
+  const etat=a==='remettre'?'a_traiter':a;
+  await api('/api/action',{id:it.id,etat});
+  const grp=el.closest('.group');el.remove();
+  if(grp&&!grp.querySelector('.row'))grp.remove();
+  total--;maj();
+}
+function maj(){document.getElementById('compte').textContent=total+(state.vue==='reporte'?' reporté(s)':' à traiter');
+  if(total<=0)document.getElementById('main').innerHTML='<div id="vide">🎉 Rien ici.</div>';}
 async function charger(){
-  const nl=document.getElementById('nonlus').checked?1:0;
-  const r=await api('/api/liste?nonlus='+nl);const m=document.getElementById('main');m.innerHTML='';total=0;
+  const p=new URLSearchParams({vue:state.vue,nonlus:state.nonlus?1:0,depuis:state.depuis});
+  const r=await api('/api/liste?'+p.toString());
+  const m=document.getElementById('main');m.innerHTML='';total=0;
   for(const cas of r.cases){if(!cas.items.length)continue;
     const h=document.createElement('div');h.className='case';h.textContent=cas.titre;m.appendChild(h);
-    for(const it of cas.items){m.appendChild(carte(it));total++;}}
+    const groupes=new Map();
+    for(const it of cas.items){const k=cle(it);(groupes.get(k)||groupes.set(k,[]).get(k)).push(it);}
+    for(const items of groupes.values()){total+=items.length;
+      m.appendChild(items.length>1?groupe(items):carte(items[0]));}
+  }
   maj();
 }
-document.getElementById('nonlus').onchange=charger;charger();
+function setVue(v){state.vue=v;
+  document.getElementById('v-atraiter').classList.toggle('on',v==='atraiter');
+  document.getElementById('v-reporte').classList.toggle('on',v==='reporte');
+  document.getElementById('l-nonlus').style.display=(v==='atraiter'&&!state.depuis)?'':'none';
+  charger();}
+document.getElementById('v-atraiter').onclick=()=>setVue('atraiter');
+document.getElementById('v-reporte').onclick=()=>setVue('reporte');
+document.getElementById('nonlus').onchange=e=>{state.nonlus=e.target.checked;charger();};
+document.getElementById('depuis').onchange=e=>{state.depuis=e.target.value;
+  document.getElementById('l-nonlus').style.display=(state.vue==='atraiter'&&!state.depuis)?'':'none';charger();};
+charger();
 </script></body></html>"""
 
 
