@@ -1,0 +1,15 @@
+[Unit]
+Description=IAMail — tri automatique des emails + cockpit
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/IAMail-compagnon
+# Clé Mistral (facultative) dans un fichier protégé, pas dans l'unité :
+EnvironmentFile=-%h/.config/iamail/env
+ExecStart=/usr/bin/python3 %h/IAMail-compagnon/iamail_compagnon.py --config %h/IAMail-compagnon/config.json service --pas-de-navigateur
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
