@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "IAMail — bouton cockpit",
+  "description": "Ajoute un bouton dans Thunderbird pour ouvrir le cockpit IAMail.",
+  "version": "1.0.0",
+  "author": "Arnaud François",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "iamail-cockpit@noche84",
+      "strict_min_version": "128.0"
+    }
+  },
+  "background": { "scripts": ["background.js"] },
+  "action": {
+    "default_title": "Ouvrir le cockpit IAMail",
+    "default_icon": "icon.svg"
+  }
+}

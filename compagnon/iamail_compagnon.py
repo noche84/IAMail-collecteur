@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1647,7 +1647,7 @@ def generer_audio(texte, cfg, sortie):
     Path(wav).parent.mkdir(parents=True, exist_ok=True)
     try:
         if moteur == "piper" and tts.get("modele"):
-            subprocess.run(["piper", "-m", tts["modele"], "--output_file", wav],
+            subprocess.run(["piper", "-m", tts["modele"], "-f", wav],
                            input=texte.encode("utf-8"), check=True, capture_output=True)
         else:
             exe = shutil.which("espeak-ng") or shutil.which("espeak")
