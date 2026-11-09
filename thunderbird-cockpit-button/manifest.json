@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "IAMail — bouton cockpit",
-  "description": "Ajoute un bouton dans Thunderbird pour ouvrir le cockpit IAMail.",
-  "version": "1.0.0",
+  "name": "IAMail — cockpit + synchro",
+  "description": "Ouvre le cockpit IAMail et synchronise l'état « Traité » avec Thunderbird (étiquette + lu), dans les deux sens.",
+  "version": "1.1.0",
   "author": "Arnaud François",
   "browser_specific_settings": {
     "gecko": {
@@ -10,6 +10,8 @@
       "strict_min_version": "128.0"
     }
   },
+  "permissions": ["messagesRead", "messagesUpdate", "messagesTags", "accountsRead"],
+  "host_permissions": ["http://127.0.0.1/*"],
   "background": { "scripts": ["background.js"] },
   "action": {
     "default_title": "Ouvrir le cockpit IAMail",

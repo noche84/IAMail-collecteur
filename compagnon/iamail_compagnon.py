@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.11.2"
+VERSION = "1.12.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -793,6 +793,7 @@ COLONNES_ANALYSE = {
     "ia_resume": "TEXT", "ia_question": "TEXT", "ia_confiance": "TEXT",
     "ia_source": "TEXT", "ia_at": "TEXT",
     "non_lu": "INTEGER", "etat": "TEXT",
+    "tb_sync": "TEXT",   # état déjà appliqué dans Thunderbird (retour-mail bidirectionnel)
 }
 
 
@@ -1448,6 +1449,11 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
 
 
+# Étiquette partagée appliquée dans Thunderbird quand un mail est « Traité »
+# dans le cockpit (retour-mail). La clé est l'identifiant stable côté Thunderbird.
+ETIQUETTE_TRAITE = {"cle": "iamail_traite", "nom": "Traité IAMail", "couleur": "#12b76a"}
+
+
 def faire_cockpit_handler(cfg):
     db = cfg["base_sqlite"]
     etat_audio = {"chemin": None}
@@ -1456,13 +1462,26 @@ def faire_cockpit_handler(cfg):
         def log_message(self, *a):
             pass
 
+        def _cors(self):
+            # Serveur strictement local : l'extension Thunderbird appelle depuis
+            # son origine moz-extension://… — on autorise l'accès.
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
         def _json(self, obj, code=200):
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self._cors()
             self.end_headers()
             self.wfile.write(data)
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self._cors()
+            self.end_headers()
 
         def _corps(self):
             n = int(self.headers.get("Content-Length", 0))
@@ -1503,6 +1522,20 @@ def faire_cockpit_handler(cfg):
                     self.wfile.write(data)
                 else:
                     self._json({"erreur": "pas d'audio"}, 404)
+            elif u.path == "/api/sync/pour-client":
+                # Ce que l'extension Thunderbird doit APPLIQUER dans la boîte.
+                cx = sqlite3.connect(db)
+                a_marquer = [r[0] for r in cx.execute(
+                    "SELECT message_id FROM messages WHERE etat='traite' "
+                    "AND (tb_sync IS NULL OR tb_sync!='traite') "
+                    "AND message_id NOT LIKE 'sansid:%'").fetchall()]
+                a_demarquer = [r[0] for r in cx.execute(
+                    "SELECT message_id FROM messages WHERE tb_sync='traite' "
+                    "AND (etat IS NULL OR etat!='traite') "
+                    "AND message_id NOT LIKE 'sansid:%'").fetchall()]
+                cx.close()
+                self._json({"etiquette": ETIQUETTE_TRAITE,
+                            "a_marquer": a_marquer, "a_demarquer": a_demarquer})
             else:
                 self._json({"erreur": "inconnu"}, 404)
 
@@ -1527,6 +1560,48 @@ def faire_cockpit_handler(cfg):
                     self._json({"ok": True})
                 else:
                     self._json({"ok": False, "erreur": "fichier introuvable"}, 404)
+            elif self.path == "/api/sync/confirme":
+                # L'extension confirme ce qu'elle a appliqué dans Thunderbird.
+                marques = c.get("marques", []) or []
+                demarques = c.get("demarques", []) or []
+                cx = sqlite3.connect(db)
+                for i in marques:
+                    cx.execute("UPDATE messages SET tb_sync='traite' WHERE message_id=?", (i,))
+                for i in demarques:
+                    cx.execute("UPDATE messages SET tb_sync=NULL WHERE message_id=?", (i,))
+                cx.commit()
+                cx.close()
+                self._json({"ok": True})
+            elif self.path == "/api/sync/depuis-client":
+                # Sens inverse : l'utilisateur a posé/retiré l'étiquette dans Thunderbird.
+                # L'étiquette est la vérité partagée ; LIRE un mail ne le traite jamais.
+                traites = c.get("traites", []) or []
+                non_traites = c.get("non_traites", []) or []
+
+                def _variantes(i):
+                    # Thunderbird envoie l'id nu ; en base il peut être entre chevrons.
+                    nu = (i or "").strip().strip("<>")
+                    return [nu, "<" + nu + ">", (i or "").strip()]
+
+                cx = sqlite3.connect(db)
+                maj = 0
+                for i in traites:
+                    v = _variantes(i)
+                    cur = cx.execute(
+                        "UPDATE messages SET etat='traite', tb_sync='traite' "
+                        "WHERE message_id IN (?,?,?) AND (etat IS NULL OR etat!='traite')", v)
+                    maj += cur.rowcount
+                for i in non_traites:
+                    # On ne rouvre que si Thunderbird AVAIT l'étiquette (évite d'annuler
+                    # un « Traité » tout juste fait dans le cockpit et pas encore appliqué).
+                    v = _variantes(i)
+                    cur = cx.execute(
+                        "UPDATE messages SET etat=NULL, tb_sync=NULL "
+                        "WHERE message_id IN (?,?,?) AND tb_sync='traite'", v)
+                    maj += cur.rowcount
+                cx.commit()
+                cx.close()
+                self._json({"ok": True, "maj": maj})
             else:
                 self._json({"erreur": "inconnu"}, 404)
     return H
