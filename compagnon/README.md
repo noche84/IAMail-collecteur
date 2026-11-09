@@ -147,6 +147,25 @@ réel viendra avec le collecteur Outlook/Thunderbird).
 
 Le cockpit n'affiche que ce que l'IA a déjà jugé (`analyser-ia`).
 
+## Le service — tout automatique (pour un usage réel)
+Un seul processus qui **relève + juge en continu ET sert le cockpit**. On le
+lance une fois, on garde Thunderbird ouvert, et le cockpit reste à jour tout
+seul : à chaque réception, TB écrit dans le mbox, le service le relève au cycle
+suivant, le juge, et le mail apparaît dans la fenêtre.
+```bash
+export MISTRAL_API_KEY="ta_cle"          # pour le jugement IA
+python3 iamail_compagnon.py --config config.json service
+#   --intervalle 120   : cycle plus rapide (défaut 300 s)
+#   --sans-ia          : automatisation sans coût IA (tri seul)
+```
+- Chaque cycle juge au plus `ia_max_par_cycle` nouveaux mails (config, défaut 20)
+  — garde-fou de coût. Le backlog historique se juge donc progressivement ;
+  pour tester l'automatisation sans dépenser, utilise `--sans-ia`.
+- **Points d'accès au cockpit** : l'URL directe `http://127.0.0.1:8740/` (à
+  mettre en marque-page, y compris dans Thunderbird), et le lanceur
+  `ouvrir-cockpit.desktop` (Linux : rends-le exécutable, double-clic). Un bouton
+  *dans* Thunderbird/Outlook viendra avec l'extension collecteur.
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats

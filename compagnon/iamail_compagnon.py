@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -867,7 +867,8 @@ def cmd_analyser(args):
             cx.commit()
     cx.commit()
     print(f"[{NOM}] analysés : {faits}, ignorés : {erreurs}, en {time.time()-t0:.0f}s")
-    _resume_analyse(cx)
+    if not getattr(args, "silencieux", False):
+        _resume_analyse(cx)
     cx.close()
 
 
@@ -1269,6 +1270,8 @@ def cmd_brief(args):
 # ----------------------------------------------------------------------------
 import http.server
 import subprocess
+import threading
+import types
 import webbrowser
 
 
@@ -1543,6 +1546,75 @@ def cmd_cockpit(args):
 
 
 # ----------------------------------------------------------------------------
+# Le service — relève + jugement en continu, et sert le cockpit
+# ----------------------------------------------------------------------------
+def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
+    """Un cycle : relève des mbox -> analyse déterministe -> jugement IA (du nouveau)."""
+    try:
+        cmd_import(types.SimpleNamespace(config=cfg_path, mbox=None, limite=None))
+    except SystemExit as e:
+        print(f"[{NOM}] (relève) {e}")
+    except Exception as e:
+        print(f"[{NOM}] relève: {e}")
+    try:
+        cmd_analyser(types.SimpleNamespace(config=cfg_path, retout=False, silencieux=True))
+    except Exception as e:
+        print(f"[{NOM}] analyse: {e}")
+    if utiliser_ia:
+        try:
+            cmd_analyser_ia(types.SimpleNamespace(
+                config=cfg_path, mock=False, retout=False, limite=ia_max, jours=None))
+        except SystemExit as e:
+            print(f"[{NOM}] (IA) {e}")
+        except Exception as e:
+            print(f"[{NOM}] IA: {e}")
+
+
+def cmd_service(args):
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    backfill_non_lu(cx)
+    cx.close()
+    intervalle = max(60, args.intervalle)
+    utiliser_ia = not args.sans_ia
+    ia_max = cfg.get("ia_max_par_cycle", 20)
+
+    arret = threading.Event()
+
+    def boucle():
+        while not arret.is_set():
+            print(f"[{NOM}] — cycle de relève/jugement —")
+            pipeline_once(args.config, utiliser_ia, ia_max)
+            arret.wait(intervalle)
+
+    threading.Thread(target=boucle, daemon=True).start()
+
+    port = args.port
+    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg["base_sqlite"]))
+    url = f"http://127.0.0.1:{port}/"
+    barre = "=" * 54
+    print("\n" + barre)
+    print("  IAMail — service actif")
+    print(f"  Cockpit  : {url}")
+    print(f"  Relève + jugement toutes les {intervalle // 60} min"
+          + ("  (sans IA)" if not utiliser_ia else ""))
+    print("  Ctrl+C pour arrêter")
+    print(barre + "\n")
+    if not args.pas_de_navigateur:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print(f"\n[{NOM}] arrêt du service.")
+        arret.set()
+        srv.server_close()
+
+
+# ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
 def main(argv=None):
@@ -1589,6 +1661,13 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8740)
     s.add_argument("--pas-de-navigateur", action="store_true", dest="pas_de_navigateur")
     s.set_defaults(func=cmd_cockpit)
+
+    s = sub.add_parser("service", help="relève + juge en continu ET sert le cockpit")
+    s.add_argument("--port", type=int, default=8740)
+    s.add_argument("--intervalle", type=int, default=300, help="secondes entre deux relèves")
+    s.add_argument("--sans-ia", action="store_true", dest="sans_ia", help="relève+tri sans appeler l'IA (sans coût)")
+    s.add_argument("--pas-de-navigateur", action="store_true", dest="pas_de_navigateur")
+    s.set_defaults(func=cmd_service)
 
     s = sub.add_parser("brief", help="topo du matin en cases (d'après l'IA)")
     s.add_argument("--nombre", type=int, default=15)

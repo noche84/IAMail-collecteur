@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=IAMail — Cockpit
+Comment=Ouvrir le cockpit de tri IAMail dans le navigateur
+Exec=xdg-open http://127.0.0.1:8740/
+Icon=mail-message-new
+Terminal=false
+Categories=Network;Email;Office;
