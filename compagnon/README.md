@@ -126,6 +126,27 @@ python3 iamail_compagnon.py --config config.json brief
 - `brief` affiche le topo en cases : **Maintenant / Cette semaine / Ce mois**,
   avec les tâches extraites, leurs échéances, et les questions en attente.
 
+## Le cockpit — la fenêtre de tri (pas de terminal pour l'utilisateur)
+```bash
+python3 iamail_compagnon.py --config config.json cockpit
+```
+Ouvre une page dans le navigateur : les mails jugés par l'IA, rangés en cases
+(Maintenant / Cette semaine / Ce mois / Pour info), avec résumé, tâche, échéance
+et priorité. Par carte :
+- **Ouvrir l'email** : le compagnon ouvre le `.eml` archivé dans ton logiciel de
+  mail (Outlook/Thunderbird/Mail) ; comme les en-têtes sont préservés, Répondre
+  et Transférer y fonctionnent normalement.
+- **Déléguer** : ouvre le mail pour que tu fasses « Transférer » (collègue + note).
+- **Traité** : sort le mail du cockpit.
+- **Reporter** : le garde pour plus tard.
+
+Case à cocher **« non-lus seulement »** : n'affiche que les non-lus — c'est ton
+backlog au retour de vacances. L'état (à traiter / traité / reporté) est stocké
+dans l'index, **sans toucher à ta vraie boîte** (le miroir vers le « lu/non-lu »
+réel viendra avec le collecteur Outlook/Thunderbird).
+
+Le cockpit n'affiche que ce que l'IA a déjà jugé (`analyser-ia`).
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats

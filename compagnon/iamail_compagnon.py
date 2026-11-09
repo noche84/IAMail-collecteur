@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -791,6 +791,7 @@ COLONNES_ANALYSE = {
     "ia_echeance": "TEXT", "ia_pression": "TEXT", "ia_priorite": "TEXT",
     "ia_resume": "TEXT", "ia_question": "TEXT", "ia_confiance": "TEXT",
     "ia_source": "TEXT", "ia_at": "TEXT",
+    "non_lu": "INTEGER", "etat": "TEXT",
 }
 
 
@@ -1264,6 +1265,220 @@ def cmd_brief(args):
 
 
 # ----------------------------------------------------------------------------
+# Le cockpit — fenêtre de tri (serveur web local)
+# ----------------------------------------------------------------------------
+import http.server
+import subprocess
+import webbrowser
+
+
+def _ouvrir_fichier(chemin):
+    """Ouvre un fichier avec l'application par défaut de l'OS (le client mail pour un .eml)."""
+    if sys.platform.startswith("darwin"):
+        subprocess.Popen(["open", chemin])
+    elif os.name == "nt":
+        os.startfile(chemin)  # noqa
+    else:
+        subprocess.Popen(["xdg-open", chemin])
+
+
+def backfill_non_lu(cx):
+    """Lit le statut lu/non-lu depuis l'archive (en-tête X-Mozilla-Status de Thunderbird)."""
+    from email.parser import BytesHeaderParser
+    rows = cx.execute("SELECT message_id, fichier_eml FROM messages "
+                      "WHERE non_lu IS NULL AND fichier_eml IS NOT NULL").fetchall()
+    n = 0
+    for mid, chemin in rows:
+        try:
+            with open(chemin, "rb") as f:
+                msg = BytesHeaderParser().parse(f)
+            st = msg.get("X-Mozilla-Status")
+            if st:
+                nl = 0 if (int(st, 16) & 1) else 1
+                cx.execute("UPDATE messages SET non_lu=? WHERE message_id=?", (nl, mid))
+                n += 1
+        except Exception:
+            pass
+    cx.commit()
+    return n
+
+
+CASES_COCKPIT = [("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"),
+                 ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
+
+
+def cockpit_liste(db, non_lus_seulement):
+    cx = sqlite3.connect(db)
+    cond = "etat IS NULL AND ia_source IS NOT NULL"
+    if non_lus_seulement:
+        cond += " AND (non_lu=1 OR non_lu IS NULL)"
+    rows = cx.execute(
+        f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
+            ia_echeance, ia_priorite, ia_pression, ia_question, non_lu
+            FROM messages WHERE {cond} ORDER BY date_mail DESC""").fetchall()
+    cx.close()
+    cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance",
+            "priorite", "pression", "question", "non_lu"]
+    par_case = {c: [] for c, _ in CASES_COCKPIT}
+    for r in rows:
+        it = dict(zip(cols, r))
+        par_case.get(it["pression"] or "aucune", par_case["aucune"]).append(it)
+    return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
+
+
+def faire_cockpit_handler(db):
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _json(self, obj, code=200):
+            data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _corps(self):
+            n = int(self.headers.get("Content-Length", 0))
+            return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+
+        def do_GET(self):
+            from urllib.parse import urlparse, parse_qs
+            u = urlparse(self.path)
+            if u.path == "/":
+                page = PAGE_COCKPIT.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+            elif u.path == "/api/liste":
+                q = parse_qs(u.query)
+                non_lus = q.get("nonlus", ["0"])[0] == "1"
+                self._json({"cases": cockpit_liste(db, non_lus)})
+            else:
+                self._json({"erreur": "inconnu"}, 404)
+
+        def do_POST(self):
+            c = self._corps()
+            mid = c.get("id")
+            if self.path == "/api/action":
+                cx = sqlite3.connect(db)
+                cx.execute("UPDATE messages SET etat=? WHERE message_id=?",
+                           (c.get("etat"), mid))
+                cx.commit()
+                cx.close()
+                self._json({"ok": True})
+            elif self.path == "/api/ouvrir":
+                cx = sqlite3.connect(db)
+                row = cx.execute("SELECT fichier_eml FROM messages WHERE message_id=?",
+                                 (mid,)).fetchone()
+                cx.close()
+                if row and row[0] and Path(row[0]).exists():
+                    _ouvrir_fichier(row[0])
+                    self._json({"ok": True})
+                else:
+                    self._json({"ok": False, "erreur": "fichier introuvable"}, 404)
+            else:
+                self._json({"erreur": "inconnu"}, 404)
+    return H
+
+
+PAGE_COCKPIT = """<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>IAMail — cockpit</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1a1a1a;--mut:#666;--line:#e5e7eb;
+--haute:#d92d20;--normale:#1570ef;--basse:#667085;}
+@media(prefers-color-scheme:dark){:root{--bg:#16181d;--card:#20242b;--tx:#e8e8e8;
+--mut:#9aa1ac;--line:#30353d;}}
+*{box-sizing:border-box}body{font:14px system-ui,sans-serif;margin:0;background:var(--bg);color:var(--tx)}
+header{position:sticky;top:0;background:var(--bg);padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+h1{font-size:17px;margin:0}main{max-width:820px;margin:0 auto;padding:16px}
+.case{margin:18px 0 6px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0;border-left:4px solid var(--basse)}
+.card.haute{border-left-color:var(--haute)}.card.normale{border-left-color:var(--normale)}
+.tache{font-weight:600}.sujet{color:var(--mut);font-size:13px;margin:2px 0}
+.meta{color:var(--mut);font-size:12px;margin-top:4px}
+.ech{display:inline-block;background:var(--line);border-radius:5px;padding:1px 7px;font-size:12px;margin-left:6px}
+.q{margin-top:6px;font-size:13px;color:var(--haute)}
+.badge{font-size:11px;border:1px solid var(--line);border-radius:5px;padding:0 6px;margin-left:6px;color:var(--mut)}
+.btns{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+button{font:13px system-ui;padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--tx);cursor:pointer}
+button:hover{background:var(--bg)}
+button.ok{border-color:#12b76a;color:#12b76a}button.pri{border-color:var(--normale);color:var(--normale)}
+.toggle{margin-left:auto;font-size:13px;color:var(--mut)}#vide{color:var(--mut);padding:40px 0;text-align:center}
+</style></head><body>
+<header><h1>🛩️ IAMail — cockpit</h1><span id="compte" class="badge"></span>
+<label class="toggle"><input type="checkbox" id="nonlus"> non-lus seulement</label></header>
+<main id="main"></main>
+<script>
+const api=(p,b)=>fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
+let total=0;
+function carte(it){
+  const d=document.createElement('div');d.className='card '+(it.priorite||'basse');
+  const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">⏱ ${it.echeance}</span>`:'';
+  const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
+  const q=it.question?`<div class="q">❓ ${it.question}</div>`:'';
+  d.innerHTML=`<div class="tache">${(it.tache||it.resume||'(sans objet)')}${ech}${nl}</div>
+   <div class="sujet">${it.sujet||''}</div>
+   <div class="meta">${it.de||''}</div>${q}
+   <div class="btns">
+     <button class="pri" data-a="ouvrir">Ouvrir l'email</button>
+     <button data-a="deleguer">Déléguer…</button>
+     <button class="ok" data-a="traite">Traité</button>
+     <button data-a="reporte">Reporter</button>
+   </div>`;
+  d.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,d));
+  return d;
+}
+async function action(it,a,card){
+  if(a==='ouvrir'){await api('/api/ouvrir',{id:it.id});return;}
+  if(a==='deleguer'){await api('/api/ouvrir',{id:it.id});
+     alert("L'email s'ouvre dans ton logiciel : fais « Transférer », ajoute le collègue et ta note.");return;}
+  await api('/api/action',{id:it.id,etat:a});card.remove();total--;maj();
+}
+function maj(){document.getElementById('compte').textContent=total+' à traiter';
+  if(total<=0)document.getElementById('main').innerHTML='<div id="vide">🎉 Boîte traitée — rien en attente.</div>';}
+async function charger(){
+  const nl=document.getElementById('nonlus').checked?1:0;
+  const r=await api('/api/liste?nonlus='+nl);const m=document.getElementById('main');m.innerHTML='';total=0;
+  for(const cas of r.cases){if(!cas.items.length)continue;
+    const h=document.createElement('div');h.className='case';h.textContent=cas.titre;m.appendChild(h);
+    for(const it of cas.items){m.appendChild(carte(it));total++;}}
+  maj();
+}
+document.getElementById('nonlus').onchange=charger;charger();
+</script></body></html>"""
+
+
+def cmd_cockpit(args):
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    print(f"[{NOM}] lecture du statut lu/non-lu depuis l'archive…")
+    n = backfill_non_lu(cx)
+    if n:
+        print(f"[{NOM}] {n} statuts lus.")
+    cx.close()
+    port = args.port
+    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg["base_sqlite"]))
+    url = f"http://127.0.0.1:{port}/"
+    print(f"[{NOM}] cockpit ouvert : {url}  (Ctrl+C pour arrêter)")
+    if not args.pas_de_navigateur:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print(f"\n[{NOM}] cockpit fermé.")
+        srv.server_close()
+
+
+# ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
 def main(argv=None):
@@ -1305,6 +1520,11 @@ def main(argv=None):
 
     s = sub.add_parser("reset-ia", help="efface les jugements IA (pour rejuger)")
     s.set_defaults(func=cmd_reset_ia)
+
+    s = sub.add_parser("cockpit", help="ouvre la fenêtre de tri (serveur web local)")
+    s.add_argument("--port", type=int, default=8740)
+    s.add_argument("--pas-de-navigateur", action="store_true", dest="pas_de_navigateur")
+    s.set_defaults(func=cmd_cockpit)
 
     s = sub.add_parser("brief", help="topo du matin en cases (d'après l'IA)")
     s.add_argument("--nombre", type=int, default=15)
