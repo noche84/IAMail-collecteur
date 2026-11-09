@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.11.1"
+VERSION = "1.11.2"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1244,7 +1244,7 @@ def cmd_analyser_ia(args):
     if not cfg_ia.get("cle"):
         cfg_ia["cle"] = os.environ.get("MISTRAL_API_KEY", "")
     fournisseur = (args.mock and "mock") or cfg_ia.get("fournisseur", "mock")
-    if fournisseur != "mock" and not cfg_ia.get("cle"):
+    if fournisseur != "mock" and not cfg_ia.get("cle") and not getattr(args, "compter", False):
         raise SystemExit("Clé IA absente : mets-la dans la variable d'environnement "
                          "MISTRAL_API_KEY (recommandé, pas en clair dans config.json), "
                          "ou lance avec --mock.")
@@ -1273,6 +1273,12 @@ def cmd_analyser_ia(args):
     rows = cx.execute(sql, params).fetchall()
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
             "expediteur_humain", "important", "categorie"]
+    if getattr(args, "compter", False):
+        print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
+               f"({fournisseur}). Aucun appel effectué (--compter).")
+        cx.close()
+        return
+
     print(f"[{NOM}] IA ({fournisseur}) sur {len(rows)} message(s)…")
 
     faits, erreurs, questions = 0, 0, 0
@@ -1978,6 +1984,8 @@ def main(argv=None):
     s.add_argument("--retout", action="store_true", help="rejuger même ce qui l'a déjà été")
     s.add_argument("--limite", type=int, default=None, help="nb max de messages")
     s.add_argument("--jours", type=int, default=None, help="limiter aux N derniers jours")
+    s.add_argument("--compter", action="store_true",
+                   help="affiche seulement combien de messages seraient envoyés (aucun coût)")
     s.set_defaults(func=cmd_analyser_ia)
 
     s = sub.add_parser("reset-ia", help="efface les jugements IA (pour rejuger)")
