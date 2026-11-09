@@ -15,5 +15,11 @@
     "endpoint": "https://api.mistral.ai/v1/chat/completions",
     "cle": "",
     "modele": "mistral-small-latest"
+  },
+  "tts": {
+    "moteur": "espeak-ng",
+    "voix": "fr",
+    "vitesse": 150,
+    "modele": ""
   }
 }

@@ -166,6 +166,19 @@ python3 iamail_compagnon.py --config config.json service
   `ouvrir-cockpit.desktop` (Linux : rends-le exécutable, double-clic). Un bouton
   *dans* Thunderbird/Outlook viendra avec l'extension collecteur.
 
+## Le topo du matin en audio (voix locale)
+Un résumé parlé de quelques minutes, pour le trajet. La voix est **locale** —
+le contenu de tes mails ne part jamais dehors. Un message suspect n'est **jamais
+lu à voix haute** (juste signalé).
+```bash
+# une voix locale, gratuite (à installer une fois) :
+sudo apt install espeak-ng          # ou : configure "piper" dans config.json pour une voix plus naturelle
+python3 iamail_compagnon.py --config config.json topo-audio
+```
+Produit un `.mp3` (via ffmpeg) dans le dossier de destination, et imprime le
+script. Dans le **cockpit**, le bouton **🔊 Topo audio** le génère et le joue
+directement dans la page.
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats

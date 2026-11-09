@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -54,6 +54,7 @@ CONFIG_DEFAUT = {
     "expediteurs_importants": [],
     "moteur_dir": "",
     "ia_jours": 0,
+    "tts": {"moteur": "espeak-ng", "voix": "fr", "vitesse": 150, "modele": ""},
     "ia": {
         "fournisseur": "mock",
         "endpoint": "https://api.mistral.ai/v1/chat/completions",
@@ -1338,7 +1339,10 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
 
 
-def faire_cockpit_handler(db):
+def faire_cockpit_handler(cfg):
+    db = cfg["base_sqlite"]
+    etat_audio = {"chemin": None}
+
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -1371,6 +1375,25 @@ def faire_cockpit_handler(db):
                 non_lus = q.get("nonlus", ["0"])[0] == "1"
                 depuis = (q.get("depuis", [""])[0] or "").strip() or None
                 self._json({"cases": cockpit_liste(db, vue, non_lus, depuis)})
+            elif u.path == "/api/topo-audio":
+                court, complet = construire_script_topo(db)
+                sortie = str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
+                chemin, err = generer_audio(complet, cfg, sortie)
+                etat_audio["chemin"] = chemin
+                self._json({"ok": bool(chemin), "court": court,
+                            "url": ("/audio?t=" + str(int(time.time()))) if chemin else None,
+                            "erreur": err})
+            elif u.path == "/audio":
+                ch = etat_audio["chemin"]
+                if ch and Path(ch).exists():
+                    data = Path(ch).read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg" if ch.endswith(".mp3") else "audio/wav")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self._json({"erreur": "pas d'audio"}, 404)
             else:
                 self._json({"erreur": "inconnu"}, 404)
 
@@ -1436,13 +1459,27 @@ input[type=date]{font:13px system-ui;padding:4px 6px;border:1px solid var(--line
 <header>
   <h1>🛩️ IAMail</h1>
   <div class="seg"><button id="v-atraiter" class="on">À traiter</button><button id="v-reporte">Reportés</button></div>
+  <button id="audio" class="pri">🔊 Topo audio</button>
   <span id="compte" class="badge"></span>
   <label class="ctl" id="l-nonlus"><input type="checkbox" id="nonlus"> non-lus seulement</label>
   <label class="ctl spacer">Retour d'absence depuis <input type="date" id="depuis"></label>
 </header>
+<div id="barreaudio" style="display:none;max-width:840px;margin:10px auto 0;padding:0 16px">
+  <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px">
+    <div id="audiotexte" style="font-size:13px;color:var(--mut);margin-bottom:6px"></div>
+    <audio id="lecteur" controls style="width:100%"></audio></div></div>
 <main id="main"></main>
 <script>
 const api=(p,b)=>fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
+document.getElementById('audio').onclick=async()=>{
+  const b=document.getElementById('audio');b.textContent='⏳ génération…';b.disabled=true;
+  try{const r=await api('/api/topo-audio');
+    document.getElementById('audiotexte').textContent=r.court||'';
+    if(r.ok&&r.url){const l=document.getElementById('lecteur');l.src=r.url;
+      document.getElementById('barreaudio').style.display='';l.play().catch(()=>{});}
+    else{alert('Pas de voix : '+(r.erreur||'')+"\\nInstalle espeak-ng (sudo apt install espeak-ng).");}
+  }catch(e){alert('Erreur: '+e);} finally{b.textContent='🔊 Topo audio';b.disabled=false;}
+};
 const esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let state={vue:'atraiter',nonlus:false,depuis:''},total=0;
 const cle=it=>(it.tache||it.resume||it.sujet||'').trim().toLowerCase();
@@ -1530,7 +1567,7 @@ def cmd_cockpit(args):
         print(f"[{NOM}] {n} statuts lus.")
     cx.close()
     port = args.port
-    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg["base_sqlite"]))
+    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
     url = f"http://127.0.0.1:{port}/"
     print(f"[{NOM}] cockpit ouvert : {url}  (Ctrl+C pour arrêter)")
     if not args.pas_de_navigateur:
@@ -1543,6 +1580,107 @@ def cmd_cockpit(args):
     except KeyboardInterrupt:
         print(f"\n[{NOM}] cockpit fermé.")
         srv.server_close()
+
+
+# ----------------------------------------------------------------------------
+# Le topo du matin — script parlé + synthèse vocale (local)
+# ----------------------------------------------------------------------------
+def _nom_affiche(de):
+    """Nom lisible d'un expéditeur pour la voix (prénom/nom, sinon l'adresse)."""
+    if not de:
+        return "un expéditeur"
+    m = re.match(r'\s*"?([^"<]+?)"?\s*<', de)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    spec = (_adresses_spec(de) or [de])[0]
+    return spec.split("@", 1)[0].replace(".", " ")
+
+
+def construire_script_topo(db, par_case=5):
+    """Construit (résumé 30 s, script complet) du topo, avec garde-fous."""
+    cx = sqlite3.connect(db)
+
+    def cnt(pression):
+        return cx.execute(
+            "SELECT COUNT(*) FROM messages WHERE etat IS NULL AND ia_source IS NOT NULL "
+            "AND ia_pression=? AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0",
+            (pression,)).fetchone()[0]
+
+    n_now, n_week, n_month = cnt("maintenant"), cnt("cette_semaine"), cnt("ce_mois")
+    n_susp = cx.execute("SELECT COUNT(*) FROM messages WHERE etat IS NULL AND suspect=1").fetchone()[0]
+
+    resume = (f"Bonjour. Ce matin, {n_now} chose"
+              f"{'s' if n_now > 1 else ''} à traiter maintenant, "
+              f"{n_week} cette semaine, et {n_month} à ne pas oublier ce mois.")
+    if n_susp:
+        resume += (f" Et {n_susp} message{'s' if n_susp > 1 else ''} suspect"
+                   f"{'s' if n_susp > 1 else ''} à vérifier, que je ne lis pas à voix haute.")
+
+    lignes = [resume, ""]
+    for pression, titre in [("maintenant", "À traiter maintenant"),
+                            ("cette_semaine", "Cette semaine"),
+                            ("ce_mois", "À ne pas oublier ce mois")]:
+        rows = cx.execute(
+            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance FROM messages "
+            "WHERE etat IS NULL AND ia_source IS NOT NULL AND ia_pression=? "
+            "AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0 "
+            "ORDER BY date_mail DESC LIMIT ?", (pression, par_case)).fetchall()
+        if not rows:
+            continue
+        lignes.append(titre + ".")
+        for de, tache, res, ech in rows:
+            phrase = (tache or res or "un message").rstrip(".")
+            if ech and ech not in ("aucune", None):
+                phrase += f", pour le {ech}"
+            lignes.append(f"De {_nom_affiche(de)} : {phrase}.")
+        lignes.append("")
+    lignes.append("Bonne journée.")
+    cx.close()
+    return resume, "\n".join(lignes).strip()
+
+
+def generer_audio(texte, cfg, sortie):
+    """Synthèse vocale locale (espeak-ng par défaut, piper si configuré). Renvoie (chemin, erreur)."""
+    tts = cfg.get("tts", {})
+    moteur = tts.get("moteur", "espeak-ng")
+    wav = sortie if sortie.endswith(".wav") else sortie + ".wav"
+    Path(wav).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if moteur == "piper" and tts.get("modele"):
+            subprocess.run(["piper", "-m", tts["modele"], "--output_file", wav],
+                           input=texte.encode("utf-8"), check=True, capture_output=True)
+        else:
+            exe = shutil.which("espeak-ng") or shutil.which("espeak")
+            if not exe:
+                return None, "aucun moteur de synthèse (installe espeak-ng : sudo apt install espeak-ng)"
+            subprocess.run([exe, "-v", tts.get("voix", "fr"),
+                            "-s", str(tts.get("vitesse", 150)), "-w", wav, texte],
+                           check=True, capture_output=True)
+    except Exception as e:
+        return None, str(e)
+    # Convertit en mp3 (plus léger, pour le téléphone) si ffmpeg est là.
+    if shutil.which("ffmpeg"):
+        mp3 = wav[:-4] + ".mp3"
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", wav, "-codec:a", "libmp3lame",
+                            "-q:a", "5", mp3], check=True, capture_output=True)
+            return mp3, None
+        except Exception:
+            pass
+    return wav, None
+
+
+def cmd_topo_audio(args):
+    cfg = charger_config(args.config)
+    court, complet = construire_script_topo(cfg["base_sqlite"], args.par_case)
+    print("=== Topo (30 secondes) ===\n" + court + "\n")
+    print("=== Script complet ===\n" + complet + "\n")
+    sortie = args.sortie or str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
+    chemin, err = generer_audio(complet, cfg, sortie)
+    if chemin:
+        print(f"[{NOM}] audio généré : {chemin}")
+    else:
+        print(f"[{NOM}] script prêt, mais pas d'audio : {err}")
 
 
 # ----------------------------------------------------------------------------
@@ -1591,7 +1729,7 @@ def cmd_service(args):
     threading.Thread(target=boucle, daemon=True).start()
 
     port = args.port
-    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg["base_sqlite"]))
+    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
     url = f"http://127.0.0.1:{port}/"
     barre = "=" * 54
     print("\n" + barre)
@@ -1672,6 +1810,11 @@ def main(argv=None):
     s = sub.add_parser("brief", help="topo du matin en cases (d'après l'IA)")
     s.add_argument("--nombre", type=int, default=15)
     s.set_defaults(func=cmd_brief)
+
+    s = sub.add_parser("topo-audio", help="génère le topo du matin en audio (voix locale)")
+    s.add_argument("--par-case", type=int, default=5, dest="par_case")
+    s.add_argument("--sortie", default=None, help="chemin du fichier audio")
+    s.set_defaults(func=cmd_topo_audio)
 
     s = sub.add_parser("suggerer-adresses", help="propose tes adresses pour 'mes_adresses'")
     s.set_defaults(func=cmd_suggerer_adresses)
