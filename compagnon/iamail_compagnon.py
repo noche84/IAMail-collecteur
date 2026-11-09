@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.12.0"
+VERSION = "1.12.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1847,6 +1847,100 @@ def _phrase_message(de, tache, res, ech, dm, annee):
     return phrase + "."
 
 
+_STOP_FIL = {"pour", "avec", "votre", "notre", "dans", "vous", "nous", "email",
+             "mail", "objet", "concernant", "suite", "projet", "demande", "reponse",
+             "question", "info", "fwd", "les", "des", "une", "un", "la", "le", "du",
+             "de", "et", "re", "tr"}
+
+
+def _sujet_court(sujet):
+    """Objet lisible pour la voix : sans Re:/Tr: ni [tags], casse d'origine conservée."""
+    s = _PREFIXE_FIL.sub("", (sujet or "").strip())
+    s = re.sub(r'\[[^\]]*\]', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s[:70]
+
+
+def _mots_sujet(sujet):
+    """Mots significatifs d'un objet (≥4 lettres, hors mots vides) — pour rapprocher deux fils."""
+    s = _sujet_fil(sujet)
+    return {m for m in re.split(r'[^a-z0-9]+', s) if len(m) >= 4 and m not in _STOP_FIL}
+
+
+def _grouper_fils(rows):
+    """Regroupe des messages par AFFAIRE : fils identiques, mais aussi fils voisins
+    (même sujet au libellé un peu différent). rows = (de, tache, res, ech, dm, sujet),
+    triés par date décroissante. Renvoie une liste de groupes {mots, rows}."""
+    groupes = []
+    for r in rows:
+        ms = _mots_sujet(r[5])
+        cible, meilleur = None, 0.0
+        if ms:
+            for g in groupes:
+                inter = len(ms & g["mots"])
+                if not inter:
+                    continue
+                jac = inter / len(ms | g["mots"])
+                sous = ms <= g["mots"] or g["mots"] <= ms
+                if (inter >= 2 or sous) and jac >= 0.34 and jac > meilleur:
+                    cible, meilleur = g, jac
+        else:
+            cle = _sujet_fil(r[5])
+            for g in groupes:
+                if not g["mots"] and g["cle"] == cle:
+                    cible = g
+                    break
+        if cible:
+            cible["rows"].append(r)
+            cible["mots"] |= ms
+        else:
+            groupes.append({"mots": set(ms), "cle": _sujet_fil(r[5]), "rows": [r]})
+    return groupes
+
+
+def _lister_noms(noms, maxi=5):
+    if len(noms) == 1:
+        return noms[0]
+    if len(noms) <= maxi:
+        return ", ".join(noms[:-1]) + " et " + noms[-1]
+    return ", ".join(noms[:maxi]) + f" et {len(noms) - maxi} autres"
+
+
+def _echeance_proche(eches):
+    """La plus proche échéance datée d'un groupe, dite en français ; None si aucune."""
+    best = None
+    for e in eches:
+        try:
+            d = datetime.strptime((e or "").strip(), "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if best is None or d < best:
+            best = d
+    return _echeance_parlee(best.strftime("%Y-%m-%d")) if best else None
+
+
+def _phrase_groupe(rows):
+    """Une seule annonce pour toute une conversation : sujet, intervenants, action commune."""
+    noms = []
+    for r in rows:
+        n = _nom_affiche(r[0])
+        if n not in noms:
+            noms.append(n)
+    suj = _sujet_court(rows[0][5]) or "le même sujet"
+    action = ""
+    for de, tache, res, ech, dm, sujet in rows:
+        action = (tache or res or "").strip().rstrip(".")
+        if action:
+            break
+    base = f"Sur « {suj} », {len(rows)} messages de {_lister_noms(noms)}"
+    if action:
+        base += f", pour l'essentiel : {action}"
+    ep = _echeance_proche([r[3] for r in rows])
+    if ep:
+        base += f", à traiter pour {ep}"
+    return base + "."
+
+
 def construire_script_topo(db, par_case=5):
     """Construit (résumé 30 s, script complet) du topo, en français parlé naturel."""
     cx = sqlite3.connect(db)
@@ -1891,15 +1985,26 @@ def construire_script_topo(db, par_case=5):
     ]
     for pression, intro in sections:
         rows = cx.execute(
-            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail FROM messages "
+            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail, sujet FROM messages "
             "WHERE etat IS NULL AND ia_source IS NOT NULL AND ia_pression=? "
             "AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0 "
-            "ORDER BY date_mail DESC LIMIT ?", (pression, par_case)).fetchall()
+            "ORDER BY date_mail DESC LIMIT 80", (pression,)).fetchall()
         if not rows:
             continue
+        groupes = _grouper_fils(rows)
         lignes.append(intro)
-        for de, tache, res, ech, dm in rows:
-            lignes.append(_phrase_message(de, tache, res, ech, dm, annee))
+        maxg = max(par_case, 6)
+        for g in groupes[:maxg]:
+            gr = g["rows"]
+            if len(gr) == 1:
+                de, tache, res, ech, dm, sujet = gr[0]
+                lignes.append(_phrase_message(de, tache, res, ech, dm, annee))
+            else:
+                lignes.append(_phrase_groupe(gr))
+        if len(groupes) > maxg:
+            reste = len(groupes) - maxg
+            lignes.append(f"Et {reste} autre sujet{'s' if reste > 1 else ''}, "
+                          f"à voir dans le cockpit.")
         lignes.append("")
     lignes.append("Voilà pour l'essentiel. Je vous souhaite une bonne journée.")
     cx.close()
