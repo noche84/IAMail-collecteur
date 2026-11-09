@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1095,9 +1095,17 @@ def ia_bouchon(row, profil):
     finance = row["important"] and any(k in texte for k in
               ("compte", "virement", "transfert", "transfer", "crypto", "bitcoin",
                "paiement", "facture", "securite", "fraude", "bloque", "suspendu"))
+    # Notification transactionnelle (déjà faite) : information, pas une action.
+    notif = any(k in texte for k in
+                ("successful", "reussi", "recu", "recue", "confirmation", "confirme",
+                 "login", "connexion", "alerte de connexion", "withdrawal", "deposit",
+                 "statement", "releve", "receipt", "welcome", "bienvenue",
+                 "invitation", "nouvelles invitations", "horoscope"))
     cat = row["categorie"] or "autre"
 
-    if finance:
+    if notif:
+        prio, pression, action, tache = "basse", "aucune", False, None
+    elif finance:
         prio, pression, action = "haute", "maintenant", True
         tache = "Vérifier ce message financier/sécurité"
     elif row["expediteur_humain"] and a_urgent and not crie_au_loup:
@@ -1132,10 +1140,14 @@ def cmd_analyser_ia(args):
     charger_regles(cfg)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
-    cfg_ia = cfg.get("ia", {})
+    cfg_ia = dict(cfg.get("ia", {}))
+    if not cfg_ia.get("cle"):
+        cfg_ia["cle"] = os.environ.get("MISTRAL_API_KEY", "")
     fournisseur = (args.mock and "mock") or cfg_ia.get("fournisseur", "mock")
     if fournisseur != "mock" and not cfg_ia.get("cle"):
-        raise SystemExit("Clé IA absente : renseigne cfg['ia']['cle'] (Mistral) ou lance avec --mock.")
+        raise SystemExit("Clé IA absente : mets-la dans la variable d'environnement "
+                         "MISTRAL_API_KEY (recommandé, pas en clair dans config.json), "
+                         "ou lance avec --mock.")
 
     systeme = charger_prompt(cfg)
     taxonomie = charger_taxonomie(cfg)
@@ -1150,9 +1162,10 @@ def cmd_analyser_ia(args):
         limite_date = (datetime.now(timezone.utc)).timestamp() - jours * 86400
         filtre_date = " AND date_mail >= ?"
         params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
+    cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
     sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
            "expediteur_humain, important, categorie "
-           "FROM messages WHERE ia_source IS NULL AND categorie IS NOT NULL "
+           "FROM messages WHERE " + cond_source + "categorie IS NOT NULL "
            "AND (bulk=0 OR important=1)" + filtre_date +
            " ORDER BY date_mail DESC")
     if args.limite:
@@ -1202,6 +1215,18 @@ def cmd_analyser_ia(args):
     cx.commit()
     print(f"[{NOM}] jugés : {faits}, questions soulevées : {questions}, "
           f"erreurs : {erreurs}, en {time.time()-t0:.0f}s")
+    cx.close()
+
+
+def cmd_reset_ia(args):
+    """Efface les jugements IA pour pouvoir rejuger proprement."""
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    cols = [c for c in COLONNES_ANALYSE if c.startswith("ia_")]
+    cx.execute("UPDATE messages SET " + ", ".join(f"{c}=NULL" for c in cols))
+    cx.commit()
+    print(f"[{NOM}] jugements IA effacés. Relance 'analyser-ia'.")
     cx.close()
 
 
@@ -1273,9 +1298,13 @@ def main(argv=None):
 
     s = sub.add_parser("analyser-ia", help="jugement IA (Mistral, ou --mock pour tester)")
     s.add_argument("--mock", action="store_true", help="modèle bouchonné, sans clé")
+    s.add_argument("--retout", action="store_true", help="rejuger même ce qui l'a déjà été")
     s.add_argument("--limite", type=int, default=None, help="nb max de messages")
     s.add_argument("--jours", type=int, default=None, help="limiter aux N derniers jours")
     s.set_defaults(func=cmd_analyser_ia)
+
+    s = sub.add_parser("reset-ia", help="efface les jugements IA (pour rejuger)")
+    s.set_defaults(func=cmd_reset_ia)
 
     s = sub.add_parser("brief", help="topo du matin en cases (d'après l'IA)")
     s.add_argument("--nombre", type=int, default=15)
