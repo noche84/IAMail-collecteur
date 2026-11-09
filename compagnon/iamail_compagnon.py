@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -52,6 +52,14 @@ CONFIG_DEFAUT = {
     "deplacer": True,
     "mes_adresses": [],
     "expediteurs_importants": [],
+    "moteur_dir": "",
+    "ia_jours": 0,
+    "ia": {
+        "fournisseur": "mock",
+        "endpoint": "https://api.mistral.ai/v1/chat/completions",
+        "cle": "",
+        "modele": "mistral-small-latest"
+    },
 }
 
 
@@ -779,6 +787,10 @@ COLONNES_ANALYSE = {
     "bulk": "INTEGER", "automatique": "INTEGER", "expediteur_humain": "INTEGER",
     "important": "INTEGER", "suspect": "INTEGER", "priorite": "TEXT",
     "raison": "TEXT", "confiance": "TEXT", "analyse_source": "TEXT", "analyse_at": "TEXT",
+    "ia_categorie": "TEXT", "ia_action": "INTEGER", "ia_tache": "TEXT",
+    "ia_echeance": "TEXT", "ia_pression": "TEXT", "ia_priorite": "TEXT",
+    "ia_resume": "TEXT", "ia_question": "TEXT", "ia_confiance": "TEXT",
+    "ia_source": "TEXT", "ia_at": "TEXT",
 }
 
 
@@ -814,6 +826,7 @@ def cmd_analyser(args):
     cfg = charger_config(args.config)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
+    charger_regles(cfg)
     mes = [a.lower() for a in cfg.get("mes_adresses", [])]
     importants = {a.lower() for a in cfg.get("expediteurs_importants", [])}
     if not mes:
@@ -928,6 +941,304 @@ def cmd_suggerer_adresses(args):
 
 
 # ----------------------------------------------------------------------------
+# Le cerveau — couche IA (jugement contextuel)
+# ----------------------------------------------------------------------------
+import urllib.request
+import urllib.error
+
+
+def _moteur_dir(cfg):
+    d = cfg.get("moteur_dir") or ""
+    if d:
+        return Path(d)
+    # Par défaut : dossier moteur/ à côté du script, puis ../moteur.
+    ici = Path(__file__).resolve().parent
+    for cand in (ici / "moteur", ici.parent / "moteur"):
+        if cand.exists():
+            return cand
+    return ici / "moteur"
+
+
+def charger_regles(cfg):
+    """Surcharge les règles déterministes depuis moteur/regles.json (donnée partagée)."""
+    p = _moteur_dir(cfg) / "regles.json"
+    if not p.exists():
+        return False
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[{NOM}] regles.json illisible ({e}), règles internes utilisées.", file=sys.stderr)
+        return False
+    g = globals()
+    corresp = {
+        "expediteurs_auto": ("EXPEDITEURS_AUTO", set),
+        "mots_urgents": ("MOTS_URGENTS", list),
+        "freemail": ("FREEMAIL", set),
+        "marketing_labels": ("MARKETING_LABELS", set),
+        "local_auto_indices": ("LOCAL_AUTO_INDICES", tuple),
+        "local_generique": ("LOCAL_GENERIQUE", set),
+        "sujets_importants": ("SUJETS_IMPORTANTS", list),
+        "domaines_importants": ("DOMAINES_IMPORTANTS", tuple),
+    }
+    for cle, (nom_var, conv) in corresp.items():
+        if cle in d:
+            g[nom_var] = conv(d[cle])
+    if "regles_categorie" in d:
+        g["REGLES_CATEGORIE"] = [(x[0], list(x[1])) for x in d["regles_categorie"]]
+    return True
+
+
+def charger_prompt(cfg):
+    p = _moteur_dir(cfg) / "prompt.txt"
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ("Tu classes un email. Réponds en JSON strict avec categorie, "
+            "action_attendue, tache, echeance, pression, priorite, resume, "
+            "question, confiance.")
+
+
+def charger_taxonomie(cfg):
+    p = _moteur_dir(cfg) / "taxonomie.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8")).get("categories", [])
+        except Exception:
+            pass
+    return [{"nom": "autre", "description": "Tout le reste."}]
+
+
+def profils_expediteurs(cx):
+    """Distille l'historique : par expéditeur, volume et % de mails 'urgent'."""
+    profils = {}
+    rows = cx.execute("SELECT de_adresse, sujet FROM messages").fetchall()
+    for de, sujet in rows:
+        spec = (_adresses_spec(de or "") or [""])[0]
+        if not spec:
+            continue
+        p = profils.setdefault(spec, {"n": 0, "urgents": 0})
+        p["n"] += 1
+        texte = _sans_accents((sujet or "").lower())
+        if any(m in texte for m in MOTS_URGENTS):
+            p["urgents"] += 1
+    for spec, p in profils.items():
+        p["pct_urgent"] = round(p["urgents"] / p["n"], 2) if p["n"] else 0.0
+    return profils
+
+
+def construire_entree_ia(row, profil, taxonomie, aujourdhui):
+    """Texte compact envoyé à l'IA pour UN message (en plus du prompt système)."""
+    cats = ", ".join(f"{c['nom']} ({c['description']})" for c in taxonomie)
+    prof = (f"{profil['n']} messages reçus de cet expéditeur, "
+            f"{int(profil['pct_urgent']*100)}% marqués 'urgent'"
+            if profil else "expéditeur inconnu (premier contact)")
+    extrait = (row.get("extrait") or "")[:800]
+    pre = []
+    pre.append("destinataire: " + ("à moi" if row["pour_moi"] == 1 else
+               ("en copie" if row["pour_moi"] == 0 else "diffusion")))
+    pre.append("expéditeur " + ("humain" if row["expediteur_humain"] else "automatique"))
+    if row["bulk"]:
+        pre.append("courrier de masse")
+    if row["important"]:
+        pre.append("marqué important")
+    return (
+        f"DATE DU JOUR: {aujourdhui}\n"
+        f"CATÉGORIES POSSIBLES: {cats}\n"
+        f"PROFIL EXPÉDITEUR: {prof}\n"
+        f"PRÉ-CLASSEMENT AUTOMATIQUE: {', '.join(pre)}\n"
+        f"--- EMAIL ---\n"
+        f"De: {row['de_adresse']}\n"
+        f"Objet: {row['sujet']}\n"
+        f"Date: {row['date_mail']}\n"
+        f"Extrait: {extrait}\n"
+    )
+
+
+def appeler_mistral(cfg_ia, systeme, utilisateur):
+    """Appel chat completions compatible OpenAI (Mistral). Renvoie le texte brut."""
+    corps = json.dumps({
+        "model": cfg_ia.get("modele", "mistral-small-latest"),
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": systeme},
+            {"role": "user", "content": utilisateur},
+        ],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        cfg_ia.get("endpoint", "https://api.mistral.ai/v1/chat/completions"),
+        data=corps,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + cfg_ia.get("cle", ""),
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return data["choices"][0]["message"]["content"]
+
+
+def _extraire_json(texte):
+    """Récupère le premier objet JSON d'une réponse (robuste aux ``` et au bavardage)."""
+    deb = texte.find("{")
+    fin = texte.rfind("}")
+    if deb == -1 or fin == -1:
+        raise ValueError("pas de JSON dans la réponse")
+    return json.loads(texte[deb:fin + 1])
+
+
+def ia_bouchon(row, profil):
+    """Modèle BOUCHONNÉ pour tester tout le pipeline sans clé Mistral.
+    Imite un jugement plausible à partir des signaux déterministes + profil."""
+    texte = _sans_accents(((row["sujet"] or "") + " " + (row["de_adresse"] or "")).lower())
+    a_urgent = any(m in texte for m in MOTS_URGENTS)
+    crie_au_loup = bool(profil and profil["n"] >= 5 and profil["pct_urgent"] >= 0.5)
+    finance = row["important"] and any(k in texte for k in
+              ("compte", "virement", "transfert", "transfer", "crypto", "bitcoin",
+               "paiement", "facture", "securite", "fraude", "bloque", "suspendu"))
+    cat = row["categorie"] or "autre"
+
+    if finance:
+        prio, pression, action = "haute", "maintenant", True
+        tache = "Vérifier ce message financier/sécurité"
+    elif row["expediteur_humain"] and a_urgent and not crie_au_loup:
+        prio, pression, action = "haute", "maintenant", True
+        tache = row["sujet"]
+    elif row["expediteur_humain"] and a_urgent and crie_au_loup:
+        prio, pression, action = "normale", "ce_mois", True
+        tache = row["sujet"]
+    elif row["important"]:
+        prio, pression, action = "normale", "cette_semaine", True
+        tache = row["sujet"]
+    elif row["bulk"]:
+        prio, pression, action = "basse", "aucune", False
+        tache = None
+    else:
+        prio, pression, action = "normale", "cette_semaine", bool(row["pour_moi"] == 1)
+        tache = row["sujet"] if row["pour_moi"] == 1 else None
+
+    question = None
+    if crie_au_loup and a_urgent:
+        question = f"« {(row['sujet'] or '')[:40]} » est marqué urgent, mais cet expéditeur l'écrit souvent — vraiment pour maintenant ?"
+    return {
+        "categorie": cat, "action_attendue": action, "tache": tache,
+        "echeance": "aucune", "pression": pression, "priorite": prio,
+        "resume": (row["sujet"] or "")[:80], "question": question,
+        "confiance": "moyenne",
+    }
+
+
+def cmd_analyser_ia(args):
+    cfg = charger_config(args.config)
+    charger_regles(cfg)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    cfg_ia = cfg.get("ia", {})
+    fournisseur = (args.mock and "mock") or cfg_ia.get("fournisseur", "mock")
+    if fournisseur != "mock" and not cfg_ia.get("cle"):
+        raise SystemExit("Clé IA absente : renseigne cfg['ia']['cle'] (Mistral) ou lance avec --mock.")
+
+    systeme = charger_prompt(cfg)
+    taxonomie = charger_taxonomie(cfg)
+    aujourdhui = datetime.now().strftime("%Y-%m-%d")
+    profils = profils_expediteurs(cx)
+
+    # Sélection : ce qui mérite l'IA et n'a pas encore été jugé.
+    jours = args.jours if args.jours is not None else cfg.get("ia_jours", 0)
+    filtre_date = ""
+    params = []
+    if jours and jours > 0:
+        limite_date = (datetime.now(timezone.utc)).timestamp() - jours * 86400
+        filtre_date = " AND date_mail >= ?"
+        params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
+    sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
+           "expediteur_humain, important, categorie "
+           "FROM messages WHERE ia_source IS NULL AND categorie IS NOT NULL "
+           "AND (bulk=0 OR important=1)" + filtre_date +
+           " ORDER BY date_mail DESC")
+    if args.limite:
+        sql += f" LIMIT {int(args.limite)}"
+    rows = cx.execute(sql, params).fetchall()
+    cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
+            "expediteur_humain", "important", "categorie"]
+    print(f"[{NOM}] IA ({fournisseur}) sur {len(rows)} message(s)…")
+
+    faits, erreurs, questions = 0, 0, 0
+    t0 = time.time()
+    for r in rows:
+        row = dict(zip(cols, r))
+        spec = (_adresses_spec(row["de_adresse"] or "") or [""])[0]
+        profil = profils.get(spec)
+        try:
+            if fournisseur == "mock":
+                res = ia_bouchon(row, profil)
+            else:
+                entree = construire_entree_ia(row, profil, taxonomie, aujourdhui)
+                res = _extraire_json(appeler_mistral(cfg_ia, systeme, entree))
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+            erreurs += 1
+            if erreurs <= 3:
+                print(f"[{NOM}] appel IA échoué : {e}", file=sys.stderr)
+            continue
+        except Exception as e:
+            erreurs += 1
+            cx.execute("UPDATE messages SET ia_source=?, ia_at=? WHERE message_id=?",
+                       ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
+            continue
+        cx.execute(
+            """UPDATE messages SET ia_categorie=?, ia_action=?, ia_tache=?, ia_echeance=?,
+               ia_pression=?, ia_priorite=?, ia_resume=?, ia_question=?, ia_confiance=?,
+               ia_source=?, ia_at=? WHERE message_id=?""",
+            (res.get("categorie"), int(bool(res.get("action_attendue"))),
+             res.get("tache"), res.get("echeance"), res.get("pression"),
+             res.get("priorite"), res.get("resume"), res.get("question"),
+             res.get("confiance"), fournisseur,
+             datetime.now(timezone.utc).isoformat(), row["message_id"]),
+        )
+        faits += 1
+        if res.get("question"):
+            questions += 1
+        if faits % 50 == 0:
+            cx.commit()
+    cx.commit()
+    print(f"[{NOM}] jugés : {faits}, questions soulevées : {questions}, "
+          f"erreurs : {erreurs}, en {time.time()-t0:.0f}s")
+    cx.close()
+
+
+def cmd_brief(args):
+    """Topo du matin en cases, d'après le jugement IA (repli sur le déterministe)."""
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    cases = [("maintenant", "MAINTENANT"), ("cette_semaine", "CETTE SEMAINE"),
+             ("ce_mois", "CE MOIS — À NE PAS OUBLIER")]
+    print("=== Topo du matin ===\n")
+    for cle, titre in cases:
+        rows = cx.execute(
+            """SELECT date_mail, de_adresse, COALESCE(ia_tache, sujet), ia_echeance, ia_question
+               FROM messages WHERE ia_pression=? AND COALESCE(ia_action,1)=1
+               ORDER BY date_mail DESC LIMIT ?""", (cle, args.nombre)).fetchall()
+        if not rows:
+            continue
+        print(f"— {titre} —")
+        for d, de, tache, ech, q in rows:
+            ligne = f"  • {(tache or '(sans objet)')[:66]}"
+            if ech and ech not in ("aucune", None):
+                ligne += f"  [échéance {ech}]"
+            print(ligne)
+            print(f"      {(de or '')[:40]}")
+            if q:
+                print(f"      ❓ {q[:90]}")
+        print()
+    nb_q = cx.execute("SELECT COUNT(*) FROM messages WHERE ia_question IS NOT NULL AND ia_question<>''").fetchone()[0]
+    if nb_q:
+        print(f"({nb_q} question(s) en attente de ta réponse — voir ci-dessus.)")
+    manque = cx.execute("SELECT COUNT(*) FROM messages WHERE ia_source IS NULL AND (bulk=0 OR important=1) AND categorie IS NOT NULL").fetchone()[0]
+    if manque:
+        print(f"\n({manque} message(s) pas encore jugés par l'IA — lance 'analyser-ia'.)")
+    cx.close()
+
+
+# ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
 def main(argv=None):
@@ -956,9 +1267,19 @@ def main(argv=None):
     s.add_argument("--retout", action="store_true", help="ré-analyse tout, pas seulement le nouveau")
     s.set_defaults(func=cmd_analyser)
 
-    s = sub.add_parser("topo", help="aperçu priorisé (graine du topo du matin)")
+    s = sub.add_parser("topo", help="aperçu priorisé déterministe")
     s.add_argument("--nombre", type=int, default=20)
     s.set_defaults(func=cmd_topo)
+
+    s = sub.add_parser("analyser-ia", help="jugement IA (Mistral, ou --mock pour tester)")
+    s.add_argument("--mock", action="store_true", help="modèle bouchonné, sans clé")
+    s.add_argument("--limite", type=int, default=None, help="nb max de messages")
+    s.add_argument("--jours", type=int, default=None, help="limiter aux N derniers jours")
+    s.set_defaults(func=cmd_analyser_ia)
+
+    s = sub.add_parser("brief", help="topo du matin en cases (d'après l'IA)")
+    s.add_argument("--nombre", type=int, default=15)
+    s.set_defaults(func=cmd_brief)
 
     s = sub.add_parser("suggerer-adresses", help="propose tes adresses pour 'mes_adresses'")
     s.set_defaults(func=cmd_suggerer_adresses)

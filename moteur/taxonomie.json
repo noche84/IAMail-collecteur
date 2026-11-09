@@ -1,0 +1,18 @@
+{
+  "_commentaire": "Taxonomie par défaut (construction). GesEnt la surcharge par entreprise (ADR 0011). Fournie à l'IA dans le prompt.",
+  "categories": [
+    {"nom": "facture", "description": "Facture d'un fournisseur, rappel ou note de crédit."},
+    {"nom": "devis", "description": "Demande de devis, offre de prix, estimation."},
+    {"nom": "commande", "description": "Bon de commande ou confirmation de commande."},
+    {"nom": "livraison", "description": "Expédition, suivi de colis, livraison, retour."},
+    {"nom": "rendez_vous", "description": "Réunion, convocation, invitation, agenda, rendez-vous."},
+    {"nom": "reclamation", "description": "Réclamation, plainte, litige, demande de remboursement."},
+    {"nom": "chantier", "description": "Suivi de chantier, travaux, intervention, dépannage."},
+    {"nom": "finance", "description": "Banque, crypto, assurance, paiement, contrat, sécurité du compte."},
+    {"nom": "reseau_social", "description": "Notification d'un réseau social."},
+    {"nom": "newsletter", "description": "Lettre d'information, promotion, courrier de masse publicitaire."},
+    {"nom": "hameconnage", "description": "Tentative d'hameçonnage ou courrier frauduleux."},
+    {"nom": "personnel", "description": "Message personnel d'une connaissance."},
+    {"nom": "autre", "description": "Tout le reste."}
+  ]
+}

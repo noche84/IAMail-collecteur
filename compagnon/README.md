@@ -99,10 +99,38 @@ remonte avec un `★`. Conséquence assumée : il vaut mieux montrer un peu trop
 Tu peux forcer des expéditeurs à toujours remonter via `expediteurs_importants`
 dans la config (adresses ou domaines : `["binance.com", "ma-banque.be"]`).
 
+## La couche IA — jugement contextuel (Mistral)
+Après le déterministe, l'IA tranche le contextuel : échéance raisonnée du
+contenu et des événements (pas des mots de l'expéditeur), calibration par
+expéditeur (celui qui crie « urgent » en permanence est recalibré, sans être
+ignoré), reclassement dans les deux sens (remonter un Binance critique, calmer
+un faux urgent), et **une question posée à l'humain en cas de doute**. Son
+verdict (`ia_priorite`) surclasse le classement déterministe.
+
+Les fichiers partagés du moteur (prompt, règles, taxonomie) sont dans le dossier
+`moteur/`, à côté du script. **On modifie la logique là, pas dans le code.**
+
+```bash
+# Tester tout le pipeline SANS clé (modèle bouchonné) :
+python3 iamail_compagnon.py --config config.json analyser-ia --mock
+python3 iamail_compagnon.py --config config.json brief
+
+# En vrai avec Mistral : mettre la clé dans config.json -> "ia":
+#   { "fournisseur": "mistral", "cle": "TA_CLE", "modele": "mistral-small-latest" }
+python3 iamail_compagnon.py --config config.json analyser-ia --jours 2   # 2 derniers jours
+python3 iamail_compagnon.py --config config.json brief
+```
+
+- L'IA ne voit que ce qui le mérite : tout sauf la pub franche, **plus tout ce
+  qui est important** (même en masse). Elle ne re-juge pas ce qui l'a déjà été.
+- `brief` affiche le topo en cases : **Maintenant / Cette semaine / Ce mois**,
+  avec les tâches extraites, leurs échéances, et les questions en attente.
+
 ## Autres commandes
 ```bash
 python3 iamail_compagnon.py --config config.json stats
 python3 iamail_compagnon.py --config config.json search "facture"
+python3 iamail_compagnon.py --config config.json topo        # aperçu déterministe
 ```
 
 ## Index SQLite

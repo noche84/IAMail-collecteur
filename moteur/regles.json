@@ -1,0 +1,62 @@
+{
+  "_commentaire": "Donnée partagée du moteur de tri IAMail/IAEmail. Lue par le harnais Python (compagnon) et, à terme, par le harnais PHP (GesEnt). Source de vérité unique des règles déterministes. Modifier ici, pas dans le code.",
+  "expediteurs_auto": [
+    "no-reply", "noreply", "donotreply", "do-not-reply", "ne-pas-repondre",
+    "nepasrepondre", "mailer-daemon", "postmaster", "bounce", "bounces",
+    "notifications", "notification", "newsletter", "news", "mailing"
+  ],
+  "mots_urgents": [
+    "urgent", "immediat", "asap", "au plus vite", "rappel", "relance",
+    "derniere relance", "echeance", "expire", "aujourd hui", "avant demain",
+    "delai", "impaye", "mise en demeure", "action requise", "a traiter"
+  ],
+  "freemail": [
+    "gmail.com", "googlemail.com", "outlook.com", "outlook.be", "hotmail.com",
+    "hotmail.be", "hotmail.fr", "live.com", "live.be", "live.fr", "msn.com",
+    "yahoo.com", "yahoo.fr", "yahoo.be", "icloud.com", "me.com", "mac.com",
+    "proton.me", "protonmail.com", "gmx.com", "gmx.net", "gmx.be",
+    "skynet.be", "telenet.be", "proximus.be", "voo.be", "scarlet.be",
+    "belgacom.net", "base.be", "orange.fr", "free.fr", "laposte.net", "wanadoo.fr"
+  ],
+  "marketing_labels": [
+    "mail", "email", "emails", "e", "m", "mg", "news", "newsletter", "mailing",
+    "sendgrid", "mailchimp", "mailgun", "sparkpost", "amazonses", "mailjet",
+    "sendinblue", "klaviyo", "s", "info", "promo", "promos"
+  ],
+  "local_auto_indices": [
+    "noreply", "no-reply", "donotreply", "do_not_reply", "do-not-reply",
+    "nepasrepondre", "ne-pas-repondre", "mailer", "bounce", "notification",
+    "newsletter", "mailing", "automated", "auto-", "-auto", "reply-"
+  ],
+  "local_generique": [
+    "info", "contact", "team", "hello", "bonjour", "support", "service",
+    "services", "shop", "boutique", "news", "alerts", "alert", "admin",
+    "noreply", "no-reply", "sav", "client", "clients", "rewardclub", "club"
+  ],
+  "sujets_importants": [
+    "compte", "virement", "transfert", "transfer", "iban", "retrait", "depot",
+    "taux", "interet", "assurance", "resiliation", "resilier", "prime",
+    "prelevement", "remboursement", "facture", "paiement", "impaye", "echeance",
+    "crypto", "bitcoin", "wallet", "portefeuille", "securite", "mot de passe",
+    "connexion", "verification", "authentification", "suspendu", "bloque",
+    "fraude", "piratage", "commande", "livraison", "colis", "retour",
+    "reservation", "confirmation", "contrat", "convocation", "rendez-vous"
+  ],
+  "domaines_importants": [
+    "binance", "coinbase", "kraken", "revolut", "paypal", "stripe", "wise",
+    "kbc", "belfius", "ing.", "bnpparibas", "fortis", "santander", "argenta",
+    "keytrade", "boursorama", "deutsche-bank", "deutschebank", "crelan",
+    "touring", "axa", "ethias", "baloise", "aginsurance", "p-v.be",
+    "bpost", "dpd", "gls", "ups.com", "dhl", "fedex", "myminfin", "minfin"
+  ],
+  "regles_categorie": [
+    ["facture", ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]],
+    ["devis", ["devis", "offre de prix", "quote", "estimation", "chiffrage"]],
+    ["commande", ["bon de commande", "commande", "order", "confirmation de commande"]],
+    ["livraison", ["livraison", "expedition", "colis", "tracking", "suivi de commande", "bpost", "dpd", "gls", "ups"]],
+    ["rendez_vous", ["rendez-vous", "reunion", "meeting", "convocation", "agenda", "invitation", "rdv", "webinar", "webinaire"]],
+    ["reclamation", ["reclamation", "plainte", "remboursement", "insatisfait", "litige"]],
+    ["reseau_social", ["facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]],
+    ["chantier", ["chantier", "travaux", "intervention", "depannage"]]
+  ]
+}
