@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.10.2"
+VERSION = "1.11.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1010,30 +1010,126 @@ def charger_taxonomie(cfg):
     return [{"nom": "autre", "description": "Tout le reste."}]
 
 
+def _dt_message(valeur):
+    """Parse une date de mail (ISO en base, repli en-tête RFC) ; None si illisible."""
+    if not valeur:
+        return None
+    try:
+        return datetime.fromisoformat(str(valeur).replace("Z", "+00:00"))
+    except Exception:
+        try:
+            return email.utils.parsedate_to_datetime(valeur)
+        except Exception:
+            return None
+
+
+_PREFIXE_FIL = re.compile(r'^(?:\s*(?:re|ref|r[ée]p|fwd?|fw|tr|aw|wg)\s*:\s*)+', re.I)
+
+
+def _sujet_fil(sujet):
+    """Clé de fil de discussion : objet normalisé (sans Re:/Tr:, sans [tags], sans accents)."""
+    s = _sans_accents((sujet or "").lower())
+    s = _PREFIXE_FIL.sub("", s)
+    s = re.sub(r'\[[^\]]*\]', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def profils_expediteurs(cx):
-    """Distille l'historique : par expéditeur, volume et % de mails 'urgent'."""
-    profils = {}
-    rows = cx.execute("SELECT de_adresse, sujet FROM messages").fetchall()
-    for de, sujet in rows:
-        spec = (_adresses_spec(de or "") or [""])[0]
-        if not spec:
-            continue
-        p = profils.setdefault(spec, {"n": 0, "urgents": 0})
-        p["n"] += 1
+    """Mémoire de l'historique. Renvoie (profils, fils).
+
+    profils[adresse] = volume, part de mails 'urgent', récence (30 j), premier/
+    dernier contact, fil principal — pour ne pas traiter un habitué comme un inconnu.
+    fils[clé] = combien de messages partagent ce sujet et combien sont déjà 'chauds'
+    (importants ou urgents) — pour reconnaître un sujet suivi de près.
+    """
+    profils, fils = {}, {}
+    now = datetime.now(timezone.utc)
+
+    def _jours_depuis(d):
+        if not d:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (now - d).days
+
+    rows = cx.execute(
+        "SELECT de_adresse, sujet, date_mail, COALESCE(ia_priorite,''), "
+        "COALESCE(ia_pression,''), COALESCE(important,0) FROM messages").fetchall()
+    for de, sujet, dm, iaprio, iapress, imp in rows:
+        d = _dt_message(dm)
+        jd = _jours_depuis(d)
+        recent = jd is not None and jd <= 30
         texte = _sans_accents((sujet or "").lower())
-        if any(m in texte for m in MOTS_URGENTS):
-            p["urgents"] += 1
-    for spec, p in profils.items():
+        urgent_ton = any(m in texte for m in MOTS_URGENTS)
+        fkey = _sujet_fil(sujet)
+
+        spec = (_adresses_spec(de or "") or [""])[0]
+        if spec:
+            p = profils.setdefault(spec, {"n": 0, "urgents": 0, "recent": 0,
+                                          "premier": None, "dernier": None, "_fils": {}})
+            p["n"] += 1
+            if urgent_ton:
+                p["urgents"] += 1
+            if recent:
+                p["recent"] += 1
+            if d:
+                if not p["premier"] or d < p["premier"]:
+                    p["premier"] = d
+                if not p["dernier"] or d > p["dernier"]:
+                    p["dernier"] = d
+            if fkey:
+                p["_fils"][fkey] = p["_fils"].get(fkey, 0) + 1
+
+        if fkey:
+            f = fils.setdefault(fkey, {"n": 0, "chauds": 0, "sujet": sujet or fkey})
+            f["n"] += 1
+            if iaprio == "haute" or iapress in ("maintenant", "cette_semaine") or imp == 1:
+                f["chauds"] += 1
+
+    for p in profils.values():
         p["pct_urgent"] = round(p["urgents"] / p["n"], 2) if p["n"] else 0.0
-    return profils
+        p["fil_principal"] = (max(p["_fils"].items(), key=lambda kv: kv[1])
+                              if p["_fils"] else None)
+        jd = _jours_depuis(p["premier"])
+        p["anciennete_j"] = jd
+    return profils, fils
 
 
-def construire_entree_ia(row, profil, taxonomie, aujourdhui):
+def _profil_en_clair(profil):
+    """Résume le profil expéditeur en une phrase lisible pour l'IA."""
+    if not profil:
+        return "expéditeur inconnu (premier contact)"
+    bits = [f"{profil['n']} message(s) reçus de cet expéditeur"]
+    if profil.get("recent"):
+        bits.append(f"dont {profil['recent']} sur les 30 derniers jours")
+    bits.append(f"{int(profil['pct_urgent'] * 100)}% au ton « urgent »")
+    if profil["n"] >= 5 and profil.get("recent", 0) >= 3:
+        bits.append("CORRESPONDANT RÉCURRENT ET ACTIF — ne le traite pas comme un inconnu")
+    elif profil["n"] >= 5:
+        bits.append("correspondant connu de longue date")
+    return ", ".join(bits)
+
+
+def _memoire_fil(sujet, fils):
+    """Phrase 'mémoire' sur le fil de discussion de ce message, ou '' si rien de notable."""
+    fkey = _sujet_fil(sujet)
+    f = fils.get(fkey) if fkey else None
+    if not f or f["n"] < 2:
+        return ""
+    autres = f["n"] - 1
+    phrase = (f"fil « {f['sujet'][:60]} » : {autres} autre(s) message(s) sur ce même "
+              f"sujet dans la boîte")
+    if f["chauds"]:
+        phrase += f", dont {f['chauds']} déjà jugé(s) important(s) ou urgent(s)"
+    return phrase + ". Sujet suivi — tiens-en compte."
+
+
+def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
     """Texte compact envoyé à l'IA pour UN message (en plus du prompt système)."""
     cats = ", ".join(f"{c['nom']} ({c['description']})" for c in taxonomie)
-    prof = (f"{profil['n']} messages reçus de cet expéditeur, "
-            f"{int(profil['pct_urgent']*100)}% marqués 'urgent'"
-            if profil else "expéditeur inconnu (premier contact)")
+    prof = _profil_en_clair(profil)
+    memo = _memoire_fil(row.get("sujet"), fils)
     extrait = (row.get("extrait") or "")[:800]
     pre = []
     pre.append("destinataire: " + ("à moi" if row["pour_moi"] == 1 else
@@ -1047,7 +1143,8 @@ def construire_entree_ia(row, profil, taxonomie, aujourdhui):
         f"DATE DU JOUR: {aujourdhui}\n"
         f"CATÉGORIES POSSIBLES: {cats}\n"
         f"PROFIL EXPÉDITEUR: {prof}\n"
-        f"PRÉ-CLASSEMENT AUTOMATIQUE: {', '.join(pre)}\n"
+        + (f"MÉMOIRE: {memo}\n" if memo else "")
+        + f"PRÉ-CLASSEMENT AUTOMATIQUE: {', '.join(pre)}\n"
         f"--- EMAIL ---\n"
         f"De: {row['de_adresse']}\n"
         f"Objet: {row['sujet']}\n"
@@ -1155,7 +1252,7 @@ def cmd_analyser_ia(args):
     systeme = charger_prompt(cfg)
     taxonomie = charger_taxonomie(cfg)
     aujourdhui = datetime.now().strftime("%Y-%m-%d")
-    profils = profils_expediteurs(cx)
+    profils, fils = profils_expediteurs(cx)
 
     # Sélection : ce qui mérite l'IA et n'a pas encore été jugé.
     jours = args.jours if args.jours is not None else cfg.get("ia_jours", 0)
@@ -1188,7 +1285,7 @@ def cmd_analyser_ia(args):
             if fournisseur == "mock":
                 res = ia_bouchon(row, profil)
             else:
-                entree = construire_entree_ia(row, profil, taxonomie, aujourdhui)
+                entree = construire_entree_ia(row, profil, fils, taxonomie, aujourdhui)
                 res = _extraire_json(appeler_mistral(cfg_ia, systeme, entree))
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
             erreurs += 1
@@ -1596,9 +1693,62 @@ def _nom_affiche(de):
     return spec.split("@", 1)[0].replace(".", " ")
 
 
+_MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+         "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _heure_parlee(d):
+    """'9 heures', '10 heures 56' — pensé pour la synthèse vocale."""
+    h, mn = d.hour, d.minute
+    base = "1 heure" if h == 1 else f"{h} heures"
+    if h == 0:
+        base = "minuit"
+    return base if mn == 0 else f"{base} {mn}"
+
+
+def _date_parlee(d, annee_courante):
+    """'le 9 novembre à 10 heures 56' ; ajoute l'année seulement si ce n'est pas l'année en cours."""
+    jour = "1er" if d.day == 1 else str(d.day)
+    an = "" if d.year == annee_courante else f" {d.year}"
+    return f"le {jour} {_MOIS[d.month - 1]}{an} à {_heure_parlee(d)}"
+
+
+def _echeance_parlee(ech):
+    """'aujourd'hui' / 'demain' / 'le 15 novembre' depuis une échéance AAAA-MM-JJ, sinon None."""
+    try:
+        d = datetime.strptime((ech or "").strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+    delta = (d - datetime.now().date()).days
+    if delta == 0:
+        return "aujourd'hui"
+    if delta == 1:
+        return "demain"
+    jour = "1er" if d.day == 1 else str(d.day)
+    return f"le {jour} {_MOIS[d.month - 1]}"
+
+
+def _phrase_message(de, tache, res, ech, dm, annee):
+    """Une phrase fluide : quand, qui, quoi, pour quand."""
+    quoi = (tache or res or "un message à regarder").strip().rstrip(".")
+    nom = _nom_affiche(de)
+    d = _dt_message(dm)
+    if d:
+        quand = _date_parlee(d, annee)
+        phrase = f"{quand[0].upper()}{quand[1:]}, {nom} vous a écrit : {quoi}"
+    else:
+        phrase = f"{nom} vous a écrit : {quoi}"
+    ep = _echeance_parlee(ech) if ech and ech not in ("aucune", None) else None
+    if ep:
+        phrase += f", à faire pour {ep}"
+    return phrase + "."
+
+
 def construire_script_topo(db, par_case=5):
-    """Construit (résumé 30 s, script complet) du topo, avec garde-fous."""
+    """Construit (résumé 30 s, script complet) du topo, en français parlé naturel."""
     cx = sqlite3.connect(db)
+    annee = datetime.now().year
+    aujourdhui = datetime.now().strftime("%Y-%m-%d")
 
     def cnt(pression):
         return cx.execute(
@@ -1609,32 +1759,46 @@ def construire_script_topo(db, par_case=5):
     n_now, n_week, n_month = cnt("maintenant"), cnt("cette_semaine"), cnt("ce_mois")
     n_susp = cx.execute("SELECT COUNT(*) FROM messages WHERE etat IS NULL AND suspect=1").fetchone()[0]
 
-    resume = (f"Bonjour. Ce matin, {n_now} chose"
-              f"{'s' if n_now > 1 else ''} à traiter maintenant, "
-              f"{n_week} cette semaine, et {n_month} à ne pas oublier ce mois.")
+    resume = (f"Bonjour. Ce matin, vous avez {n_now} chose"
+              f"{'s' if n_now > 1 else ''} à traiter tout de suite, "
+              f"{n_week} pour cette semaine, et {n_month} à ne pas oublier d'ici la fin du mois.")
     if n_susp:
-        resume += (f" Et {n_susp} message{'s' if n_susp > 1 else ''} suspect"
-                   f"{'s' if n_susp > 1 else ''} à vérifier, que je ne lis pas à voix haute.")
+        resume += (f" J'ai aussi mis de côté {n_susp} message{'s' if n_susp > 1 else ''} "
+                   f"suspect{'s' if n_susp > 1 else ''}, à vérifier, que je ne lis pas à voix haute.")
 
     lignes = [resume, ""]
-    for pression, titre in [("maintenant", "À traiter maintenant"),
-                            ("cette_semaine", "Cette semaine"),
-                            ("ce_mois", "À ne pas oublier ce mois")]:
+
+    # Rendez-vous et échéances tombant aujourd'hui — annoncés en premier.
+    rdv = cx.execute(
+        "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail FROM messages "
+        "WHERE etat IS NULL AND ia_source IS NOT NULL AND COALESCE(suspect,0)=0 "
+        "AND (ia_echeance=? OR ia_categorie IN ('rendez_vous','reunion','agenda')) "
+        "ORDER BY date_mail DESC LIMIT ?", (aujourdhui, par_case)).fetchall()
+    if rdv:
+        lignes.append("Commençons par vos rendez-vous et vos échéances du jour.")
+        for de, tache, res, ech, dm in rdv:
+            quoi = (tache or res or "un rendez-vous").strip().rstrip(".")
+            lignes.append(f"Avec {_nom_affiche(de)} : {quoi}.")
+        lignes.append("")
+
+    sections = [
+        ("maintenant", "Voici ce qui demande une action maintenant."),
+        ("cette_semaine", "Pour cette semaine, à présent."),
+        ("ce_mois", "Et à garder en tête d'ici la fin du mois."),
+    ]
+    for pression, intro in sections:
         rows = cx.execute(
-            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance FROM messages "
+            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail FROM messages "
             "WHERE etat IS NULL AND ia_source IS NOT NULL AND ia_pression=? "
             "AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0 "
             "ORDER BY date_mail DESC LIMIT ?", (pression, par_case)).fetchall()
         if not rows:
             continue
-        lignes.append(titre + ".")
-        for de, tache, res, ech in rows:
-            phrase = (tache or res or "un message").rstrip(".")
-            if ech and ech not in ("aucune", None):
-                phrase += f", pour le {ech}"
-            lignes.append(f"De {_nom_affiche(de)} : {phrase}.")
+        lignes.append(intro)
+        for de, tache, res, ech, dm in rows:
+            lignes.append(_phrase_message(de, tache, res, ech, dm, annee))
         lignes.append("")
-    lignes.append("Bonne journée.")
+    lignes.append("Voilà pour l'essentiel. Je vous souhaite une bonne journée.")
     cx.close()
     return resume, "\n".join(lignes).strip()
 
