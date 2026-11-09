@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.11.0"
+VERSION = "1.11.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1410,6 +1410,7 @@ CASES_COCKPIT = [("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"
 
 def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     cx = sqlite3.connect(db)
+    profils, _ = profils_expediteurs(cx)   # mémoire : fréquence par expéditeur
     conds = ["ia_source IS NOT NULL"]
     params = []
     if vue == "reporte":
@@ -1432,6 +1433,11 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     par_case = {c: [] for c, _ in CASES_COCKPIT}
     for r in rows:
         it = dict(zip(cols, r))
+        spec = (_adresses_spec(it["de"] or "") or [""])[0]
+        p = profils.get(spec)
+        it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
+        it["freq"] = p["n"] if p else 0              # combien de mails de cet expéditeur
+        it["actif"] = bool(p and p["n"] >= 5 and p.get("recent", 0) >= 3)
         par_case.get(it["pression"] or "aucune", par_case["aucune"]).append(it)
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
 
@@ -1579,7 +1585,11 @@ document.getElementById('audio').onclick=async()=>{
 };
 const esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let state={vue:'atraiter',nonlus:false,depuis:''},total=0;
-const cle=it=>(it.tache||it.resume||it.sujet||'').trim().toLowerCase();
+// On regroupe par CONVERSATION (fil = objet nettoyé des Re:/Tr:), pas par texte de tâche.
+const cle=it=>(it.fil||it.tache||it.resume||it.sujet||'').trim().toLowerCase();
+const freqBadge=it=> it.actif
+  ? '<span class="badge" title="expéditeur fréquent et récent">✉️ écrit souvent</span>'
+  : (it.freq>=5?`<span class="badge" title="${it.freq} messages reçus">✉️ ${it.freq} mails</span>`:'');
 
 function btns(it){
   const rem=state.vue==='reporte'
@@ -1598,22 +1608,34 @@ function carte(it){
   const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
   const q=it.question?`<div class="q">❓ ${esc(it.question)}</div>`:'';
   d.innerHTML=`<div class="tache">${esc(it.tache||it.resume||'(sans objet)')}${ech}${nl}</div>
-   <div class="sujet">${esc(it.sujet)}</div><div class="meta">${esc(it.de)}</div>${q}${btns(it)}`;
+   <div class="sujet">${esc(it.sujet)}</div><div class="meta">${esc(it.de)} ${freqBadge(it)}</div>${q}${btns(it)}`;
   brancher(d,it);return d;
 }
 function groupe(items){
   const g=document.createElement('div');g.className='group '+(items[0].priorite||'basse');
   const head=document.createElement('div');head.className='grphead';
-  head.innerHTML=esc(items[0].tache||items[0].resume||'(sans objet)')+` <span class="badge">×${items.length}</span>`;
+  const suj=items[0].sujet||items[0].tache||'(conversation)';
+  const top=items.reduce((a,b)=>(b.actif||b.freq>a.freq)?b:a,items[0]);
+  const rem=state.vue==='reporte'?'remettre':'reporte';
+  const remLbl=state.vue==='reporte'?'Tout remettre':'Tout reporter';
+  head.innerHTML=`<div>💬 ${esc(suj)} <span class="badge">×${items.length} dans ce fil</span> ${freqBadge(top)}</div>
+    <div class="btns"><button class="ok" data-g="traite">Tout traiter</button>
+      <button data-g="${rem}">${remLbl}</button></div>`;
+  head.querySelectorAll('button').forEach(b=>b.onclick=()=>actionGroupe(items,b.dataset.g,g));
   g.appendChild(head);
   for(const it of items){
     const r=document.createElement('div');r.className='item row';r.style.border='0';r.style.margin='0';r.style.borderRadius='0';
     r.classList.remove('haute','normale');
     const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
-    r.innerHTML=`<div class="who">${esc(it.de)} — ${esc(it.sujet)}${nl}</div>${btns(it)}`;
+    r.innerHTML=`<div class="who">${esc(it.de)} — ${esc(it.sujet)}${nl} ${freqBadge(it)}</div>${btns(it)}`;
     brancher(r,it);g.appendChild(r);
   }
   return g;
+}
+async function actionGroupe(items,a,g){
+  const etat=a==='remettre'?'a_traiter':a;
+  for(const it of items.slice()){await api('/api/action',{id:it.id,etat});}
+  g.remove();total-=items.length;maj();
 }
 async function action(it,a,el){
   if(a==='ouvrir'||a==='deleguer'){await api('/api/ouvrir',{id:it.id});
