@@ -86,18 +86,39 @@ async function synchro() {
 setInterval(synchro, INTERVALLE_MS);
 synchro();
 
-// --- Sens inverse : l'utilisateur pose/retire l'étiquette dans Thunderbird ---
-messenger.messages.onUpdated.addListener(async (msg, changed) => {
-  if (!changed || !("tags" in changed)) return;        // on ne réagit qu'aux étiquettes
-  const mid = msg && msg.headerMessageId;
-  if (!mid) return;
-  const a = (changed.tags || []).includes(CLE_DEFAUT);
-  const corps = a ? { traites: [mid], non_traites: [] }
-                  : { traites: [], non_traites: [mid] };
+async function prevenirCockpit(corps) {
   try {
     await fetch(API + "/api/sync/depuis-client", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(corps),
     });
   } catch (e) {}
+}
+
+function idsDepuisListe(liste) {
+  // liste de MessageHeader (ou {messages:[...]}) -> Message-IDs non vides
+  const arr = Array.isArray(liste) ? liste : (liste && liste.messages) || [];
+  return arr.map(m => m && m.headerMessageId).filter(Boolean);
+}
+
+// --- Sens inverse 1 : l'utilisateur pose/retire l'étiquette dans Thunderbird ---
+messenger.messages.onUpdated.addListener(async (msg, changed) => {
+  if (!changed || !("tags" in changed)) return;        // on ne réagit qu'aux étiquettes
+  const mid = msg && msg.headerMessageId;
+  if (!mid) return;
+  const a = (changed.tags || []).includes(CLE_DEFAUT);
+  await prevenirCockpit(a ? { traites: [mid], non_traites: [] }
+                          : { traites: [], non_traites: [mid] });
+});
+
+// --- Sens inverse 2 : l'utilisateur SUPPRIME ou DÉPLACE un mail hors de sa boîte ---
+// Il l'a traité à sa manière -> il doit sortir du cockpit. (Lire ne traite jamais.)
+// L'archive du compagnon n'est pas touchée : le mail reste dans le coffre-fort.
+messenger.messages.onDeleted.addListener(async (liste) => {
+  const ids = idsDepuisListe(liste);
+  if (ids.length) await prevenirCockpit({ traites: ids, non_traites: [] });
+});
+messenger.messages.onMoved.addListener(async (_origine, deplaces) => {
+  const ids = idsDepuisListe(deplaces);
+  if (ids.length) await prevenirCockpit({ traites: ids, non_traites: [] });
 });

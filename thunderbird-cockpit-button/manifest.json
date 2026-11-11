@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "IAMail — cockpit + synchro",
-  "description": "Ouvre le cockpit IAMail et synchronise l'état « Traité » avec Thunderbird (étiquette + lu), dans les deux sens.",
-  "version": "1.1.0",
+  "description": "Ouvre le cockpit IAMail et synchronise l'état « Traité » avec Thunderbird (étiquette + lu, suppression/déplacement), dans les deux sens.",
+  "version": "1.2.0",
   "author": "Arnaud François",
   "browser_specific_settings": {
     "gecko": {
