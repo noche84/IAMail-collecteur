@@ -30,6 +30,7 @@ import email
 import email.header
 import email.utils
 import hashlib
+import html as _html_lib
 import json
 import mailbox
 import os
@@ -43,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.12.2"
+VERSION = "1.13.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -416,6 +417,54 @@ def _pieces_jointes(msg):
     return pj
 
 
+def _decoder_part(part):
+    try:
+        charge = part.get_payload(decode=True)
+        if charge is None:
+            return ""
+        cs = part.get_content_charset() or "utf-8"
+        return charge.decode(cs, errors="replace")
+    except Exception:
+        return ""
+
+
+def _html_vers_texte(h):
+    h = re.sub(r'(?is)<(script|style).*?</\1>', ' ', h)
+    h = re.sub(r'(?i)<br\s*/?>', '\n', h)
+    h = re.sub(r'(?i)</(p|div|tr|li|h[1-6])>', '\n', h)
+    h = re.sub(r'<[^>]+>', ' ', h)
+    try:
+        h = _html_lib.unescape(h)
+    except Exception:
+        pass
+    return h
+
+
+def _corps_texte(msg, maxlen=2000):
+    """Corps du mail en texte : préfère text/plain, repli sur text/html nettoyé.
+    Tronqué à maxlen (0 = pas de corps ; grand nombre ≈ corps complet)."""
+    if not maxlen:
+        return ""
+    plain, html = [], []
+    try:
+        for part in msg.walk():
+            if part.get_content_disposition() == "attachment":
+                continue
+            ct = part.get_content_type()
+            if ct == "text/plain":
+                plain.append(_decoder_part(part))
+            elif ct == "text/html":
+                html.append(_decoder_part(part))
+    except Exception:
+        pass
+    texte = "\n".join(t for t in plain if t).strip()
+    if not texte:
+        texte = _html_vers_texte("\n".join(t for t in html if t))
+    texte = re.sub(r'[ \t]+', ' ', texte)
+    texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
+    return texte[:maxlen]
+
+
 def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
     """Parcourt un mbox Thunderbird et archive chaque message. Lecture seule."""
     chemin_mbox = str(chemin_mbox)
@@ -487,17 +536,19 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
                 bilan["erreur"] += 1
                 continue
 
+            extrait = _corps_texte(msg, int(cfg.get("ia_extrait_max", 2000)))
             cx.execute(
                 """INSERT OR IGNORE INTO messages
                    (message_id, de_adresse, destinataires, copies, date_mail, sujet,
-                    fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at,
+                    extrait)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (mid, de,
                  json.dumps(meta["destinataires"], ensure_ascii=False),
                  json.dumps(meta["copies"], ensure_ascii=False),
                  meta["date"], sujet, str(dest_eml), str(dest_json),
                  json.dumps(meta["pieces_jointes"], ensure_ascii=False),
-                 dossier_logique, meta["collecte_at"]),
+                 dossier_logique, meta["collecte_at"], extrait),
             )
             bilan["archive"] += 1
             if bilan["archive"] % 200 == 0:
@@ -829,6 +880,7 @@ COLONNES_ANALYSE = {
     "ia_source": "TEXT", "ia_at": "TEXT",
     "non_lu": "INTEGER", "etat": "TEXT",
     "tb_sync": "TEXT",   # état déjà appliqué dans Thunderbird (retour-mail bidirectionnel)
+    "extrait": "TEXT",   # corps du mail en texte, pour l'analyse IA
 }
 
 
@@ -1165,7 +1217,7 @@ def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
     cats = ", ".join(f"{c['nom']} ({c['description']})" for c in taxonomie)
     prof = _profil_en_clair(profil)
     memo = _memoire_fil(row.get("sujet"), fils)
-    extrait = (row.get("extrait") or "")[:800]
+    extrait = (row.get("extrait") or "").strip()[:6000] or "(corps vide ou non texte)"
     pre = []
     pre.append("destinataire: " + ("à moi" if row["pour_moi"] == 1 else
                ("en copie" if row["pour_moi"] == 0 else "diffusion")))
@@ -1301,7 +1353,7 @@ def cmd_analyser_ia(args):
         params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
     cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
     sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
-           "expediteur_humain, important, suspect, categorie "
+           "expediteur_humain, important, suspect, categorie, extrait "
            "FROM messages WHERE " + cond_source + "categorie IS NOT NULL "
            "AND (bulk=0 OR important=1)" + filtre_date +
            " ORDER BY date_mail DESC")
@@ -1309,7 +1361,7 @@ def cmd_analyser_ia(args):
         sql += f" LIMIT {int(args.limite)}"
     rows = cx.execute(sql, params).fetchall()
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "suspect", "categorie"]
+            "expediteur_humain", "important", "suspect", "categorie", "extrait"]
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -1371,6 +1423,46 @@ def cmd_reset_ia(args):
     cx.commit()
     print(f"[{NOM}] jugements IA effacés. Relance 'analyser-ia'.")
     cx.close()
+
+
+def cmd_extraire_corps(args):
+    """Rattrape l'extrait du corps pour les mails déjà archivés, en relisant leur
+    .eml (lecture seule ; ne touche pas la boîte). À lancer une fois après mise à jour."""
+    cfg = charger_config(args.config)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    maxlen = int(cfg.get("ia_extrait_max", 2000))
+    cond = "extrait IS NULL OR extrait=''"
+    if getattr(args, "retout", False):
+        cond = "1=1"
+    rows = cx.execute(
+        f"SELECT message_id, fichier_eml FROM messages WHERE {cond}").fetchall()
+    total = len(rows)
+    print(f"[{NOM}] extraction du corps sur {total} message(s)…")
+    faits, vides, erreurs = 0, 0, 0
+    t0 = time.time()
+    for i, (mid, chemin) in enumerate(rows, 1):
+        try:
+            if not chemin or not Path(chemin).exists():
+                erreurs += 1
+                continue
+            with open(chemin, "rb") as f:
+                msg = email.message_from_binary_file(f)
+            extrait = _corps_texte(msg, maxlen)
+            cx.execute("UPDATE messages SET extrait=? WHERE message_id=?", (extrait, mid))
+            if extrait:
+                faits += 1
+            else:
+                vides += 1
+        except Exception:
+            erreurs += 1
+        if i % 500 == 0:
+            cx.commit()
+            print(f"[{NOM}] … {i}/{total} ({time.time()-t0:.0f}s)")
+    cx.commit()
+    cx.close()
+    print(f"[{NOM}] extraits remplis : {faits}, vides : {vides}, "
+          f"erreurs : {erreurs}, en {time.time()-t0:.0f}s")
 
 
 def cmd_brief(args):
@@ -2206,6 +2298,12 @@ def main(argv=None):
 
     s = sub.add_parser("reset-ia", help="efface les jugements IA (pour rejuger)")
     s.set_defaults(func=cmd_reset_ia)
+
+    s = sub.add_parser("extraire-corps",
+                       help="rattrape l'extrait du corps des mails déjà archivés (relit les .eml)")
+    s.add_argument("--retout", action="store_true",
+                   help="ré-extrait même les mails qui ont déjà un extrait")
+    s.set_defaults(func=cmd_extraire_corps)
 
     s = sub.add_parser("cockpit", help="ouvre la fenêtre de tri (serveur web local)")
     s.add_argument("--port", type=int, default=8740)
