@@ -14,8 +14,14 @@ from pathlib import Path
 
 ICI = Path(__file__).resolve().parent
 RACINE = ICI.parent.parent
-spec = importlib.util.spec_from_file_location(
-    "iamail_compagnon", RACINE / "compagnon" / "iamail_compagnon.py")
+# Le module vit soit à la racine (déploiement), soit sous compagnon/ (dépôt).
+_CANDIDATS = [RACINE / "iamail_compagnon.py", RACINE / "compagnon" / "iamail_compagnon.py"]
+_MOD = next((p for p in _CANDIDATS if p.exists()), None)
+if _MOD is None:
+    print("iamail_compagnon.py introuvable (ni à la racine, ni sous compagnon/).",
+          file=sys.stderr)
+    sys.exit(2)
+spec = importlib.util.spec_from_file_location("iamail_compagnon", _MOD)
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)
 M.charger_regles({})            # charge moteur/regles.json (donnée partagée)
