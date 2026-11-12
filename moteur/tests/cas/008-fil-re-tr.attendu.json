@@ -1,0 +1,10 @@
+{
+  "extraction": {
+    "de": "paul.nelis@entreprise.be",
+    "cle_fil": "reunion de coordination herstal"
+  },
+  "deterministe": {
+    "categorie": "rendez_vous",
+    "expediteur_humain": 1
+  }
+}

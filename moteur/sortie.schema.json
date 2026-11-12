@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "moteur-tri-iaemail/sortie.schema.json",
+  "title": "Jugement IA d'un email (contrat de sortie du moteur de tri)",
+  "description": "Toute réponse de l'IA est validée contre ce schéma AVANT d'être écrite en base, côté compagnon (Python : jsonschema) ET côté GesEnt (PHP : opis/json-schema). Échec → ia_source='erreur' et repli sur le classement déterministe. La contrainte 'categorie ∈ taxonomie' n'est pas exprimable ici (la taxonomie varie par entreprise) : chaque harnais la vérifie en plus, après le schéma.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "categorie", "action_attendue", "tache", "echeance", "pression",
+    "priorite", "resume", "question", "confiance"
+  ],
+  "properties": {
+    "categorie": {
+      "type": "string",
+      "pattern": "^[a-z_]{1,40}$"
+    },
+    "action_attendue": {
+      "type": "boolean"
+    },
+    "tache": {
+      "type": ["string", "null"],
+      "maxLength": 300
+    },
+    "echeance": {
+      "type": "string",
+      "pattern": "^(aucune|[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))$"
+    },
+    "pression": {
+      "enum": ["maintenant", "cette_semaine", "ce_mois", "aucune"]
+    },
+    "priorite": {
+      "enum": ["haute", "normale", "basse"]
+    },
+    "resume": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400
+    },
+    "question": {
+      "type": ["string", "null"],
+      "maxLength": 400
+    },
+    "confiance": {
+      "enum": ["haute", "moyenne", "faible"]
+    }
+  }
+}

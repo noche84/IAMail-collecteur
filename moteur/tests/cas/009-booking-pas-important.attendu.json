@@ -1,0 +1,9 @@
+{
+  "extraction": {
+    "de": "news@mail.booking.com"
+  },
+  "deterministe": {
+    "important": 0,
+    "bulk": 1
+  }
+}

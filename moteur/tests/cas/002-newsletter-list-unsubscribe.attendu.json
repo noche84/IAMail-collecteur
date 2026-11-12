@@ -1,0 +1,12 @@
+{
+  "extraction": {
+    "de": "news@mg.boutique.com",
+    "cle_fil": "nos offres du mois"
+  },
+  "deterministe": {
+    "expediteur_humain": 0,
+    "bulk": 1,
+    "important": 0,
+    "categorie": "newsletter"
+  }
+}

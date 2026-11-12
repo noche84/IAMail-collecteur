@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -220,11 +220,17 @@ def ingest_un(cx, cfg, json_path):
         return "erreur"
 
     pj = meta.get("pieces_jointes", [])
+    try:
+        with open(dest_eml, "rb") as f:
+            msg_obj = email.message_from_binary_file(f)
+        extrait = _corps_texte(msg_obj, int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"])))
+    except Exception:
+        extrait = ""
     cx.execute(
         """INSERT OR IGNORE INTO messages
            (message_id, de_adresse, destinataires, copies, date_mail, sujet,
-            fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at, extrait)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             mid,
             meta.get("de_adresse"),
@@ -237,6 +243,7 @@ def ingest_un(cx, cfg, json_path):
             json.dumps(pj, ensure_ascii=False),
             meta.get("dossier"),
             datetime.now(timezone.utc).isoformat(),
+            extrait,
         ),
     )
     cx.commit()
@@ -536,7 +543,7 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
                 bilan["erreur"] += 1
                 continue
 
-            extrait = _corps_texte(msg, int(cfg.get("ia_extrait_max", 2000)))
+            extrait = _corps_texte(msg, int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"])))
             cx.execute(
                 """INSERT OR IGNORE INTO messages
                    (message_id, de_adresse, destinataires, copies, date_mail, sujet,
@@ -643,7 +650,7 @@ def _expediteur_humain(spec, local):
     if dom in FREEMAIL:
         return True                      # personne sur une messagerie grand public
     # Domaine propre : humain seulement si la partie locale ressemble à prénom.nom
-    return bool(re.match(r"^[a-z]+([._-][a-z]+)+$", local))
+    return bool(re.match(REGEX_LOCAL_HUMAIN, local))
 
 
 def _domaine_marketing(dom):
@@ -652,7 +659,7 @@ def _domaine_marketing(dom):
     labels = dom.split(".")
     if set(labels) & MARKETING_LABELS:
         return True
-    return any(("mail" in l or "news" in l or "mailing" in l) for l in labels)
+    return any(any(ind in l for ind in MARKETING_INDICES_LABEL) for l in labels)
 
 # Sujets « à lire absolument », même venant d'un robot : argent, sécurité,
 # transactions, contrats. Le déterministe ne doit JAMAIS les enterrer.
@@ -668,10 +675,12 @@ SUJETS_IMPORTANTS = [
 # Fragments de domaines d'expéditeurs intrinsèquement importants.
 DOMAINES_IMPORTANTS = (
     "binance", "coinbase", "kraken", "revolut", "paypal", "stripe", "wise",
-    "kbc", "belfius", "ing.", "bnpparibas", "fortis", "santander", "argenta",
-    "keytrade", "boursorama", "deutsche-bank", "deutschebank", "crelan",
+    "kbc", "belfius", "ing", "bnpparibas", "bnpparibasfortis", "fortis",
+    "hellobank", "santander", "argenta", "keytrade", "boursorama",
+    "deutsche-bank", "deutschebank", "crelan", "beobank",
     "touring", "axa", "ethias", "baloise", "aginsurance", "p-v.be",
-    "bpost", "dpd", "gls", "ups.com", "dhl", "fedex", "myminfin", "minfin",
+    "bpost", "dpd", "gls", "gls-group", "ups.com", "dhl", "fedex",
+    "myminfin", "minfin",
 )
 
 # (catégorie, mots-clés cherchés dans sujet + expéditeur, dé-accentués)
@@ -687,6 +696,36 @@ REGLES_CATEGORIE = [
     ("reseau_social", ["facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]),
     ("chantier",      ["chantier", "travaux", "intervention", "depannage"]),
 ]
+
+# --- Clés introduites par le moteur 1.1.0 (surchargées par regles.json) -------
+# Ces valeurs par défaut doublent regles.json : si le fichier est absent, le
+# compagnon reste fonctionnel. charger_regles() les remplace par la donnée.
+REGEX_LOCAL_HUMAIN = r"^[a-z]+([._-][a-z]+)+$"
+MARKETING_INDICES_LABEL = ("mail", "news", "mailing")
+PRECEDENCE_BULK = ("bulk", "list", "junk")
+CATEGORIES_IMPORTANTES = ("facture", "devis", "commande", "livraison",
+                          "rendez_vous", "reclamation")
+MOTS_SUSPECTS = ("paiement", "facture", "urgent", "compte", "mot de passe",
+                 "iban", "virement", "verification")
+DOMAINES_RESEAU_SOCIAL = ("facebook", "linkedin", "instagram", "twitter", "tiktok")
+STRATEGIE_CATEGORIE = "mot_le_plus_long"
+FIL_PREFIXES = ("re", "ref", "rep", "fwd", "fw", "tr", "aw", "wg")
+FIL_MOTS_VIDES = {
+    "pour", "avec", "votre", "notre", "dans", "vous", "nous", "email",
+    "mail", "objet", "concernant", "suite", "projet", "demande", "reponse",
+    "question", "info", "fwd", "les", "des", "une", "un", "la", "le", "du",
+    "de", "et", "re", "tr",
+}
+PARAMS = {
+    "fenetre_recent_jours": 30,
+    "profil_actif_n_min": 5,
+    "profil_actif_recent_min": 3,
+    "regroupement_mot_longueur_min": 4,
+    "regroupement_mots_partages_min": 2,
+    "regroupement_jaccard_min": 0.34,
+    "ia_extrait_max_defaut": 2000,
+    "topo_intervenants_max": 5,
+}
 
 
 def _adresses_spec(valeur):
@@ -718,6 +757,18 @@ def _contient_mot(texte, mots):
     return False
 
 
+def _mot_matche(texte, mots):
+    """Renvoie le mot-clé normalisé LE PLUS LONG qui matche en mot entier, ou None.
+    Sert à la stratégie 'mot_le_plus_long' (« suivi de commande » > « commande »)."""
+    meilleur = None
+    for m in mots:
+        mm = _norm_texte(m).strip()
+        if mm and re.search(r'(?<!\w)' + re.escape(mm) + r'(?!\w)', texte):
+            if meilleur is None or len(mm) > len(meilleur):
+                meilleur = mm
+    return meilleur
+
+
 def _domaine_contient(dom, tokens):
     """Vrai si le domaine correspond à l'un des tokens sur une FRONTIÈRE DE LABEL
     (label complet, ou suffixe de domaine pour un token avec point).
@@ -739,8 +790,7 @@ def _domaine_contient(dom, tokens):
 
 def _est_important(texte, categorie, de_spec, importants):
     """Touche à l'argent / la sécurité / une transaction / un contrat ?"""
-    if categorie in ("facture", "devis", "commande", "livraison",
-                     "rendez_vous", "reclamation"):
+    if categorie in CATEGORIES_IMPORTANTES:
         return True
     dom = _domaine(de_spec)
     if de_spec in importants or dom in importants:
@@ -772,7 +822,7 @@ def classer(h, mes_adresses, importants=()):
     humain = _expediteur_humain(de_spec, de_local)
     bulk = bool(
         h.get("list_unsubscribe") or h.get("list_id")
-        or (h.get("precedence", "").lower() in ("bulk", "list", "junk"))
+        or (h.get("precedence", "").lower() in PRECEDENCE_BULK)
         or de_local in EXPEDITEURS_AUTO
         or _domaine_marketing(_domaine(de_spec))
     )
@@ -788,14 +838,26 @@ def classer(h, mes_adresses, importants=()):
 
     # --- Catégorie ---------------------------------------------------------
     categorie, conf_cat = "autre", "faible"
-    for nom, mots in REGLES_CATEGORIE:
-        if _contient_mot(texte, mots):
-            categorie, conf_cat = nom, "moyenne"
-            break
+    if STRATEGIE_CATEGORIE == "mot_le_plus_long":
+        # Parmi les catégories qui matchent, garder celle dont le mot-clé matché
+        # est le plus long (« suivi de commande » bat « commande ») ; 1re à égalité.
+        meilleure, meilleur_len = None, -1
+        for nom, mots in REGLES_CATEGORIE:
+            mm = _mot_matche(texte, mots)
+            if mm is not None and len(mm) > meilleur_len:
+                meilleure, meilleur_len = nom, len(mm)
+        if meilleure:
+            categorie, conf_cat = meilleure, "moyenne"
+    else:  # "premiere" : ancien comportement
+        for nom, mots in REGLES_CATEGORIE:
+            if _contient_mot(texte, mots):
+                categorie, conf_cat = nom, "moyenne"
+                break
     if categorie == "autre" and bulk:
-        categorie = "reseau_social" if any(
-            r in _domaine(de_spec) for r in ("facebook", "linkedin", "instagram", "twitter")
-        ) else "newsletter"
+        dom = _domaine(de_spec)
+        categorie = ("reseau_social"
+                     if any(r in dom for r in DOMAINES_RESEAU_SOCIAL)
+                     else "newsletter")
         conf_cat = "moyenne"
 
     # --- Soupçon d'hameçonnage (léger, jamais d'action automatique) --------
@@ -803,7 +865,7 @@ def classer(h, mes_adresses, importants=()):
     suspect = bool(
         reply_to and _domaine(reply_to) and de_spec
         and _domaine(reply_to) != _domaine(de_spec)
-        and _contient_mot(texte, ("paiement", "facture", "urgent", "compte", "mot de passe", "iban"))
+        and _contient_mot(texte, MOTS_SUSPECTS)
     )
 
     # --- Urgence -----------------------------------------------------------
@@ -881,6 +943,7 @@ COLONNES_ANALYSE = {
     "non_lu": "INTEGER", "etat": "TEXT",
     "tb_sync": "TEXT",   # état déjà appliqué dans Thunderbird (retour-mail bidirectionnel)
     "extrait": "TEXT",   # corps du mail en texte, pour l'analyse IA
+    "ia_moteur_version": "TEXT",   # version du moteur qui a produit le jugement
 }
 
 
@@ -1070,12 +1133,26 @@ def charger_regles(cfg):
         "local_generique": ("LOCAL_GENERIQUE", set),
         "sujets_importants": ("SUJETS_IMPORTANTS", list),
         "domaines_importants": ("DOMAINES_IMPORTANTS", tuple),
+        # --- clés introduites par le moteur 1.1.0 ---
+        "regex_local_humain": ("REGEX_LOCAL_HUMAIN", str),
+        "marketing_indices_label": ("MARKETING_INDICES_LABEL", tuple),
+        "precedence_bulk": ("PRECEDENCE_BULK", tuple),
+        "categories_importantes": ("CATEGORIES_IMPORTANTES", tuple),
+        "mots_suspects": ("MOTS_SUSPECTS", tuple),
+        "domaines_reseau_social": ("DOMAINES_RESEAU_SOCIAL", tuple),
+        "strategie_categorie": ("STRATEGIE_CATEGORIE", str),
+        "fil_prefixes": ("FIL_PREFIXES", tuple),
+        "fil_mots_vides": ("FIL_MOTS_VIDES", set),
     }
     for cle, (nom_var, conv) in corresp.items():
         if cle in d:
             g[nom_var] = conv(d[cle])
     if "regles_categorie" in d:
         g["REGLES_CATEGORIE"] = [(x[0], list(x[1])) for x in d["regles_categorie"]]
+    if isinstance(d.get("parametres"), dict):
+        g["PARAMS"] = {**PARAMS, **d["parametres"]}
+    # Recompiler la regex de préfixes de fil si la liste a changé.
+    g["_PREFIXE_FIL"] = _compiler_prefixe_fil(FIL_PREFIXES)
     return True
 
 
@@ -1098,6 +1175,75 @@ def charger_taxonomie(cfg):
     return [{"nom": "autre", "description": "Tout le reste."}]
 
 
+def charger_manifest(cfg):
+    p = _moteur_dir(cfg) / "manifest.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def verifier_moteur(cfg):
+    """Vérifie les empreintes sha256 des fichiers moteur au démarrage ; avertit si
+    écart (copie locale modifiée à la main ou incomplète). Renvoie la version."""
+    man = charger_manifest(cfg)
+    base = _moteur_dir(cfg)
+    for f, h in (man.get("sha256") or {}).items():
+        try:
+            got = hashlib.sha256((base / f).read_bytes()).hexdigest()
+        except Exception:
+            print(f"[{NOM}] ⚠ moteur : {f} illisible", file=sys.stderr)
+            continue
+        if got != h:
+            print(f"[{NOM}] ⚠ moteur : {f} diffère du manifest (sha256). "
+                  f"Copie locale éditée à la main ou incomplète.", file=sys.stderr)
+    return man.get("version", "?")
+
+
+_RE_ECHEANCE = re.compile(r'^(aucune|\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]))$')
+_RE_CATEGORIE = re.compile(r'^[a-z_]{1,40}$')
+
+
+def valider_sortie(res, taxo_noms):
+    """Valide et normalise le jugement IA contre le contrat (sortie.schema.json).
+    Renvoie (ok, res_normalise, erreur). Échec → le harnais écrit ia_source='erreur'
+    et retombe sur le déterministe (aucune valeur IA non validée en base)."""
+    REQUIS = ("categorie", "action_attendue", "tache", "echeance", "pression",
+              "priorite", "resume", "question", "confiance")
+    if not isinstance(res, dict):
+        return False, None, "réponse non-objet"
+    inconnues = [k for k in res if k not in REQUIS]
+    if inconnues:
+        print(f"[{NOM}] clés IA inconnues ignorées : {inconnues}", file=sys.stderr)
+    r = {k: res.get(k) for k in REQUIS}
+    for k in ("tache", "question"):               # "" → null
+        if isinstance(r[k], str) and not r[k].strip():
+            r[k] = None
+    if not isinstance(r["action_attendue"], bool):
+        return False, None, "action_attendue non booléen"
+    if r["pression"] not in ("maintenant", "cette_semaine", "ce_mois", "aucune"):
+        return False, None, "pression invalide"
+    if r["priorite"] not in ("haute", "normale", "basse"):
+        return False, None, "priorite invalide"
+    if r["confiance"] not in ("haute", "moyenne", "faible"):
+        return False, None, "confiance invalide"
+    if not isinstance(r["resume"], str) or not (1 <= len(r["resume"]) <= 400):
+        return False, None, "resume invalide"
+    if r["tache"] is not None and (not isinstance(r["tache"], str) or len(r["tache"]) > 300):
+        return False, None, "tache invalide"
+    if r["question"] is not None and (not isinstance(r["question"], str) or len(r["question"]) > 400):
+        return False, None, "question invalide"
+    if not isinstance(r["categorie"], str) or not _RE_CATEGORIE.match(r["categorie"]):
+        return False, None, "categorie format"
+    if not isinstance(r["echeance"], str) or not _RE_ECHEANCE.match(r["echeance"]):
+        return False, None, "echeance format"
+    if r["categorie"] not in taxo_noms:          # contrainte hors-schéma
+        r["categorie"] = "autre"
+    return True, r, None
+
+
 def _dt_message(valeur):
     """Parse une date de mail (ISO en base, repli en-tête RFC) ; None si illisible."""
     if not valeur:
@@ -1111,7 +1257,14 @@ def _dt_message(valeur):
             return None
 
 
-_PREFIXE_FIL = re.compile(r'^(?:\s*(?:re|ref|r[ée]p|fwd?|fw|tr|aw|wg)\s*:\s*)+', re.I)
+def _compiler_prefixe_fil(prefixes):
+    # Préfixes de fil (re|tr|fwd…) ; triés du plus long au plus court pour éviter
+    # qu'un préfixe court (fw) morde sur un plus long (fwd).
+    alt = "|".join(sorted((re.escape(p) for p in prefixes), key=len, reverse=True))
+    return re.compile(r'^(?:\s*(?:' + alt + r')\s*:\s*)+', re.I)
+
+
+_PREFIXE_FIL = _compiler_prefixe_fil(FIL_PREFIXES)
 
 
 def _sujet_fil(sujet):
@@ -1147,7 +1300,7 @@ def profils_expediteurs(cx):
     for de, sujet, dm, iaprio, iapress, imp in rows:
         d = _dt_message(dm)
         jd = _jours_depuis(d)
-        recent = jd is not None and jd <= 30
+        recent = jd is not None and jd <= PARAMS["fenetre_recent_jours"]
         urgent_ton = _contient_mot(_norm_texte(sujet or ""), MOTS_URGENTS)
         fkey = _sujet_fil(sujet)
 
@@ -1191,7 +1344,8 @@ def _profil_en_clair(profil):
     if profil.get("recent"):
         bits.append(f"dont {profil['recent']} sur les 30 derniers jours")
     bits.append(f"{int(profil['pct_urgent'] * 100)}% au ton « urgent »")
-    if profil["n"] >= 5 and profil.get("recent", 0) >= 3:
+    if (profil["n"] >= PARAMS["profil_actif_n_min"]
+            and profil.get("recent", 0) >= PARAMS["profil_actif_recent_min"]):
         bits.append("CORRESPONDANT RÉCURRENT ET ACTIF — ne le traite pas comme un inconnu")
     elif profil["n"] >= 5:
         bits.append("correspondant connu de longue date")
@@ -1212,12 +1366,29 @@ def _memoire_fil(sujet, fils):
     return phrase + ". Sujet suivi — tiens-en compte."
 
 
+def _liste_adresses(valeur, maxi=10):
+    """Formatte une liste d'adresses (stockée en JSON) pour l'IA, tronquée."""
+    try:
+        arr = json.loads(valeur) if isinstance(valeur, str) else (valeur or [])
+    except Exception:
+        arr = []
+    arr = [str(a) for a in arr if a]
+    if not arr:
+        return ""
+    if len(arr) > maxi:
+        return ", ".join(arr[:maxi]) + f" (+{len(arr) - maxi})"
+    return ", ".join(arr)
+
+
 def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
     """Texte compact envoyé à l'IA pour UN message (en plus du prompt système)."""
     cats = ", ".join(f"{c['nom']} ({c['description']})" for c in taxonomie)
     prof = _profil_en_clair(profil)
     memo = _memoire_fil(row.get("sujet"), fils)
-    extrait = (row.get("extrait") or "").strip()[:6000] or "(corps vide ou non texte)"
+    # Le corps est déjà tronqué à ia_extrait_max à l'EXTRACTION : pas de re-plafond ici.
+    extrait = (row.get("extrait") or "").strip() or "(corps vide ou non texte)"
+    a = _liste_adresses(row.get("destinataires"))
+    cc = _liste_adresses(row.get("copies"))
     pre = []
     pre.append("destinataire: " + ("à moi" if row["pour_moi"] == 1 else
                ("en copie" if row["pour_moi"] == 0 else "diffusion")))
@@ -1236,7 +1407,9 @@ def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
         + f"PRÉ-CLASSEMENT AUTOMATIQUE: {', '.join(pre)}\n"
         f"--- EMAIL ---\n"
         f"De: {row['de_adresse']}\n"
-        f"Objet: {row['sujet']}\n"
+        + (f"À: {a}\n" if a else "")
+        + (f"Cc: {cc}\n" if cc else "")
+        + f"Objet: {row['sujet']}\n"
         f"Date: {row['date_mail']}\n"
         f"Extrait: {extrait}\n"
     )
@@ -1247,6 +1420,7 @@ def appeler_mistral(cfg_ia, systeme, utilisateur):
     corps = json.dumps({
         "model": cfg_ia.get("modele", "mistral-small-latest"),
         "temperature": 0,
+        "response_format": {"type": "json_object"},   # exige un objet JSON
         "messages": [
             {"role": "system", "content": systeme},
             {"role": "user", "content": utilisateur},
@@ -1278,18 +1452,20 @@ def _extraire_json(texte):
 def ia_bouchon(row, profil):
     """Modèle BOUCHONNÉ pour tester tout le pipeline sans clé Mistral.
     Imite un jugement plausible à partir des signaux déterministes + profil."""
-    texte = _sans_accents(((row["sujet"] or "") + " " + (row["de_adresse"] or "")).lower())
-    a_urgent = any(m in texte for m in MOTS_URGENTS)
-    crie_au_loup = bool(profil and profil["n"] >= 5 and profil["pct_urgent"] >= 0.5)
-    finance = row["important"] and any(k in texte for k in
+    # Aligné sur le vrai moteur : matching par MOT ENTIER (pas sous-chaîne).
+    texte = _norm_texte((row["sujet"] or "") + " " + (row["de_adresse"] or ""))
+    a_urgent = _contient_mot(texte, MOTS_URGENTS)
+    crie_au_loup = bool(profil and profil["n"] >= PARAMS["profil_actif_n_min"]
+                        and profil["pct_urgent"] >= 0.5)
+    finance = bool(row["important"] and _contient_mot(texte,
               ("compte", "virement", "transfert", "transfer", "crypto", "bitcoin",
-               "paiement", "facture", "securite", "fraude", "bloque", "suspendu"))
+               "paiement", "facture", "securite", "fraude", "bloque", "suspendu")))
     # Notification transactionnelle (déjà faite) : information, pas une action.
-    notif = any(k in texte for k in
+    notif = _contient_mot(texte,
                 ("successful", "reussi", "recu", "recue", "confirmation", "confirme",
-                 "login", "connexion", "alerte de connexion", "withdrawal", "deposit",
+                 "login", "connexion", "withdrawal", "deposit",
                  "statement", "releve", "receipt", "welcome", "bienvenue",
-                 "invitation", "nouvelles invitations", "horoscope"))
+                 "invitation", "horoscope"))
     cat = row["categorie"] or "autre"
 
     if notif:
@@ -1319,8 +1495,8 @@ def ia_bouchon(row, profil):
     return {
         "categorie": cat, "action_attendue": action, "tache": tache,
         "echeance": "aucune", "pression": pression, "priorite": prio,
-        "resume": (row["sujet"] or "")[:80], "question": question,
-        "confiance": "moyenne",
+        "resume": ((row["sujet"] or "").strip() or "(sans objet)")[:400],
+        "question": question, "confiance": "moyenne",
     }
 
 
@@ -1340,6 +1516,8 @@ def cmd_analyser_ia(args):
 
     systeme = charger_prompt(cfg)
     taxonomie = charger_taxonomie(cfg)
+    taxo_noms = {c["nom"] for c in taxonomie}
+    moteur_version = verifier_moteur(cfg)
     aujourdhui = datetime.now().strftime("%Y-%m-%d")
     profils, fils = profils_expediteurs(cx)
 
@@ -1353,7 +1531,8 @@ def cmd_analyser_ia(args):
         params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
     cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
     sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
-           "expediteur_humain, important, suspect, categorie, extrait "
+           "expediteur_humain, important, suspect, categorie, extrait, "
+           "destinataires, copies "
            "FROM messages WHERE " + cond_source + "categorie IS NOT NULL "
            "AND (bulk=0 OR important=1)" + filtre_date +
            " ORDER BY date_mail DESC")
@@ -1361,7 +1540,8 @@ def cmd_analyser_ia(args):
         sql += f" LIMIT {int(args.limite)}"
     rows = cx.execute(sql, params).fetchall()
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "suspect", "categorie", "extrait"]
+            "expediteur_humain", "important", "suspect", "categorie", "extrait",
+            "destinataires", "copies"]
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -1392,14 +1572,26 @@ def cmd_analyser_ia(args):
             cx.execute("UPDATE messages SET ia_source=?, ia_at=? WHERE message_id=?",
                        ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
             continue
+
+        # Validation stricte : une réponse non conforme (ou un mail piégé) ne pilote
+        # jamais le cockpit → ia_source='erreur', repli sur le déterministe.
+        ok, res, err = valider_sortie(res, taxo_noms)
+        if not ok:
+            erreurs += 1
+            if erreurs <= 5:
+                print(f"[{NOM}] jugement rejeté ({err}) : {row['message_id']}", file=sys.stderr)
+            cx.execute("UPDATE messages SET ia_source=?, ia_at=? WHERE message_id=?",
+                       ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
+            continue
+
         cx.execute(
             """UPDATE messages SET ia_categorie=?, ia_action=?, ia_tache=?, ia_echeance=?,
                ia_pression=?, ia_priorite=?, ia_resume=?, ia_question=?, ia_confiance=?,
-               ia_source=?, ia_at=? WHERE message_id=?""",
-            (res.get("categorie"), int(bool(res.get("action_attendue"))),
-             res.get("tache"), res.get("echeance"), res.get("pression"),
-             res.get("priorite"), res.get("resume"), res.get("question"),
-             res.get("confiance"), fournisseur,
+               ia_source=?, ia_moteur_version=?, ia_at=? WHERE message_id=?""",
+            (res["categorie"], int(bool(res["action_attendue"])),
+             res["tache"], res["echeance"], res["pression"],
+             res["priorite"], res["resume"], res["question"],
+             res["confiance"], fournisseur, moteur_version,
              datetime.now(timezone.utc).isoformat(), row["message_id"]),
         )
         faits += 1
@@ -1431,7 +1623,7 @@ def cmd_extraire_corps(args):
     cfg = charger_config(args.config)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
-    maxlen = int(cfg.get("ia_extrait_max", 2000))
+    maxlen = int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"]))
     cond = "extrait IS NULL OR extrait=''"
     if getattr(args, "retout", False):
         cond = "1=1"
@@ -1572,7 +1764,8 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
         it["freq"] = p["n"] if p else 0              # combien de mails de cet expéditeur
-        it["actif"] = bool(p and p["n"] >= 5 and p.get("recent", 0) >= 3)
+        it["actif"] = bool(p and p["n"] >= PARAMS["profil_actif_n_min"]
+                           and p.get("recent", 0) >= PARAMS["profil_actif_recent_min"])
         par_case.get(it["pression"] or "aucune", par_case["aucune"]).append(it)
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
 
@@ -1975,12 +2168,6 @@ def _phrase_message(de, tache, res, ech, dm, annee):
     return phrase + "."
 
 
-_STOP_FIL = {"pour", "avec", "votre", "notre", "dans", "vous", "nous", "email",
-             "mail", "objet", "concernant", "suite", "projet", "demande", "reponse",
-             "question", "info", "fwd", "les", "des", "une", "un", "la", "le", "du",
-             "de", "et", "re", "tr"}
-
-
 def _sujet_court(sujet):
     """Objet lisible pour la voix : sans Re:/Tr: ni [tags], casse d'origine conservée."""
     s = _PREFIXE_FIL.sub("", (sujet or "").strip())
@@ -1992,13 +2179,16 @@ def _sujet_court(sujet):
 def _mots_sujet(sujet):
     """Mots significatifs d'un objet (≥4 lettres, hors mots vides) — pour rapprocher deux fils."""
     s = _sujet_fil(sujet)
-    return {m for m in re.split(r'[^a-z0-9]+', s) if len(m) >= 4 and m not in _STOP_FIL}
+    nmin = PARAMS["regroupement_mot_longueur_min"]
+    return {m for m in re.split(r'[^a-z0-9]+', s) if len(m) >= nmin and m not in FIL_MOTS_VIDES}
 
 
 def _grouper_fils(rows):
     """Regroupe des messages par AFFAIRE : fils identiques, mais aussi fils voisins
     (même sujet au libellé un peu différent). rows = (de, tache, res, ech, dm, sujet),
     triés par date décroissante. Renvoie une liste de groupes {mots, rows}."""
+    inter_min = PARAMS["regroupement_mots_partages_min"]
+    jac_min = PARAMS["regroupement_jaccard_min"]
     groupes = []
     for r in rows:
         ms = _mots_sujet(r[5])
@@ -2010,7 +2200,7 @@ def _grouper_fils(rows):
                     continue
                 jac = inter / len(ms | g["mots"])
                 sous = ms <= g["mots"] or g["mots"] <= ms
-                if (inter >= 2 or sous) and jac >= 0.34 and jac > meilleur:
+                if (inter >= inter_min or sous) and jac >= jac_min and jac > meilleur:
                     cible, meilleur = g, jac
         else:
             cle = _sujet_fil(r[5])
@@ -2026,7 +2216,9 @@ def _grouper_fils(rows):
     return groupes
 
 
-def _lister_noms(noms, maxi=5):
+def _lister_noms(noms, maxi=None):
+    if maxi is None:
+        maxi = PARAMS["topo_intervenants_max"]
     if len(noms) == 1:
         return noms[0]
     if len(noms) <= maxi:
@@ -2212,6 +2404,8 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
 
 def cmd_service(args):
     cfg = charger_config(args.config)
+    v = verifier_moteur(cfg)
+    print(f"[{NOM}] moteur de tri version {v}")
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
     backfill_non_lu(cx)

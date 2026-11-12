@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "de": "jean.dupont@entreprise.be",
+    "cc": [
+      "moi@ccl.be"
+    ],
+    "cle_fil": "compte rendu de la visite",
+    "extrait_debut": "Bonjour, voici"
+  },
+  "deterministe": {
+    "pour_moi": 0,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "suspect": 0
+  }
+}

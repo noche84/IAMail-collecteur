@@ -1,0 +1,10 @@
+{
+  "extraction": {
+    "de": "no-reply@mg.marque.com"
+  },
+  "deterministe": {
+    "expediteur_humain": 0,
+    "bulk": 1,
+    "urgence": "basse"
+  }
+}

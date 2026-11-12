@@ -1,5 +1,35 @@
 {
-  "_commentaire": "Donnée partagée du moteur de tri IAMail/IAEmail. Lue par le harnais Python (compagnon) et, à terme, par le harnais PHP (GesEnt). Source de vérité unique des règles déterministes. Modifier ici, pas dans le code.",
+  "_commentaire": "Donnée partagée du moteur de tri IAMail/IAEmail. Lue par le harnais Python (compagnon) et le harnais PHP (GesEnt). Source de vérité unique des règles déterministes ET de leurs paramètres. Modifier ici, pas dans le code. Format plat (listes) volontairement conservé pour rester lisible par les harnais existants ; la manière de COMPARER chaque clé est décrite dans '_semantique' et doit être appliquée à la lettre par les deux harnais.",
+  "format": 2,
+
+  "_semantique": {
+    "normalisation": "Tout texte comparé (objet, From, mots-clés) est : mis en minuscules ; décomposé en Unicode NFD puis débarrassé des marques combinantes (catégorie Mn) ; apostrophes ' et ’ remplacées par une espace. Aucune translittération (œ reste œ). Python : unicodedata.normalize('NFD', s) + filtre category != 'Mn'. PHP : Normalizer::normalize($s, Normalizer::FORM_D) puis preg_replace('/\\p{Mn}/u', '', $s).",
+    "mot": "MOT ENTIER sur le texte normalisé : (?<!\\w)MOT(?!\\w), mot-clé lui-même normalisé, regex en mode Unicode (PHP : flag /u obligatoire). Un mot-clé de plusieurs mots matche la séquence exacte.",
+    "label": "Sur le domaine de l'expéditeur découpé en labels. Token SANS point : égal à l'un des labels (« ing » matche ing.be, pas booking.com). Token AVEC point : domaine égal au token ou finissant par '.' + token.",
+    "egal": "Égalité stricte après minuscules.",
+    "sous_chaine": "Le token apparaît n'importe où dans la valeur (après minuscules).",
+    "texte_compare": "Le déterministe compare l'OBJET + l'en-tête From complet (nom affiché inclus). Il ne lit PAS le corps : le corps est réservé à l'IA.",
+
+    "expediteurs_auto": "egal sur la partie locale",
+    "local_generique": "egal sur la partie locale",
+    "local_auto_indices": "sous_chaine dans la partie locale",
+    "regex_local_humain": "Domaine NON freemail : expéditeur humain si la partie locale matche cette regex (syntaxe commune Python re / PCRE). Freemail : humain si la partie locale n'est ni auto ni générique.",
+    "freemail": "egal sur le domaine complet",
+    "marketing_labels": "egal à l'un des labels du domaine (si non freemail)",
+    "marketing_indices_label": "sous_chaine dans l'un des labels du domaine (si non freemail), ex. newsroom, mailer1",
+    "precedence_bulk": "Courrier de masse si List-Unsubscribe OU List-Id présent, OU Precedence ∈ cette liste, OU partie locale ∈ expediteurs_auto, OU domaine marketing.",
+    "mots_urgents": "mot ; ne compte que si l'expéditeur est humain ET le courrier n'est pas de masse",
+    "sujets_importants": "mot ; liste large volontairement : le déterministe ne fait que remonter 'basse' → 'normale', l'IA tranche",
+    "domaines_importants": "label. 'bnpparibas' ne matche PAS bnpparibasfortis.be (un seul label) : lister chaque domaine composé tel quel",
+    "categories_importantes": "Toute catégorie déterministe de cette liste rend le message important (jamais enterré)",
+    "mots_suspects": "mot. Soupçon d'hameçonnage si Reply-To présent ET domaine(Reply-To) ≠ domaine(From) ET l'un de ces mots présent",
+    "domaines_reseau_social": "sous_chaine dans le domaine. Masse sans autre catégorie → 'reseau_social' si match, sinon 'newsletter'",
+    "strategie_categorie": "'mot_le_plus_long' : parmi les règles de regles_categorie qui matchent (en mot), retenir celle dont le mot-clé matché est le plus long (en caractères, normalisé) ; à égalité, la première dans l'ordre. « suivi de commande » (livraison) l'emporte donc sur « commande ». 'premiere' : ancien comportement (première règle qui matche).",
+    "fil_prefixes": "Clé de fil = objet normalisé (donc « Rép: » devient « rep: »), préfixes retirés en tête (répétés, insensibles à la casse, chacun suivi de ':' avec espaces optionnels), [tags] retirés, espaces compactées",
+    "fil_mots_vides": "Mots exclus du regroupement flou des fils (topo)",
+    "parametres": "Seuils de l'algorithme (voir clés)"
+  },
+
   "expediteurs_auto": [
     "no-reply", "noreply", "donotreply", "do-not-reply", "ne-pas-repondre",
     "nepasrepondre", "mailer-daemon", "postmaster", "bounce", "bounces",
@@ -23,6 +53,8 @@
     "sendgrid", "mailchimp", "mailgun", "sparkpost", "amazonses", "mailjet",
     "sendinblue", "klaviyo", "s", "info", "promo", "promos"
   ],
+  "marketing_indices_label": ["mail", "news", "mailing"],
+  "precedence_bulk": ["bulk", "list", "junk"],
   "local_auto_indices": [
     "noreply", "no-reply", "donotreply", "do_not_reply", "do-not-reply",
     "nepasrepondre", "ne-pas-repondre", "mailer", "bounce", "notification",
@@ -33,6 +65,7 @@
     "services", "shop", "boutique", "news", "alerts", "alert", "admin",
     "noreply", "no-reply", "sav", "client", "clients", "rewardclub", "club"
   ],
+  "regex_local_humain": "^[a-z]+([._-][a-z]+)+$",
   "sujets_importants": [
     "compte", "virement", "transfert", "transfer", "iban", "retrait", "depot",
     "taux", "interet", "assurance", "resiliation", "resilier", "prime",
@@ -44,11 +77,17 @@
   ],
   "domaines_importants": [
     "binance", "coinbase", "kraken", "revolut", "paypal", "stripe", "wise",
-    "kbc", "belfius", "ing", "bnpparibas", "fortis", "santander", "argenta",
-    "keytrade", "boursorama", "deutsche-bank", "deutschebank", "crelan",
+    "kbc", "belfius", "ing", "bnpparibas", "bnpparibasfortis", "fortis",
+    "hellobank", "santander", "argenta", "keytrade", "boursorama",
+    "deutsche-bank", "deutschebank", "crelan", "beobank",
     "touring", "axa", "ethias", "baloise", "aginsurance", "p-v.be",
-    "bpost", "dpd", "gls", "ups.com", "dhl", "fedex", "myminfin", "minfin"
+    "bpost", "dpd", "gls", "gls-group", "ups.com", "dhl", "fedex",
+    "myminfin", "minfin"
   ],
+  "categories_importantes": ["facture", "devis", "commande", "livraison", "rendez_vous", "reclamation"],
+  "mots_suspects": ["paiement", "facture", "urgent", "compte", "mot de passe", "iban", "virement", "verification"],
+  "domaines_reseau_social": ["facebook", "linkedin", "instagram", "twitter", "tiktok"],
+  "strategie_categorie": "mot_le_plus_long",
   "regles_categorie": [
     ["facture", ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]],
     ["devis", ["devis", "offre de prix", "quote", "estimation", "chiffrage"]],
@@ -58,5 +97,22 @@
     ["reclamation", ["reclamation", "plainte", "remboursement", "insatisfait", "litige"]],
     ["reseau_social", ["facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]],
     ["chantier", ["chantier", "travaux", "intervention", "depannage"]]
-  ]
+  ],
+  "fil_prefixes": ["re", "ref", "rep", "fwd", "fw", "tr", "aw", "wg"],
+  "fil_mots_vides": [
+    "pour", "avec", "votre", "notre", "dans", "vous", "nous", "email",
+    "mail", "objet", "concernant", "suite", "projet", "demande", "reponse",
+    "question", "info", "fwd", "les", "des", "une", "un", "la", "le", "du",
+    "de", "et", "re", "tr"
+  ],
+  "parametres": {
+    "fenetre_recent_jours": 30,
+    "profil_actif_n_min": 5,
+    "profil_actif_recent_min": 3,
+    "regroupement_mot_longueur_min": 4,
+    "regroupement_mots_partages_min": 2,
+    "regroupement_jaccard_min": 0.34,
+    "ia_extrait_max_defaut": 2000,
+    "topo_intervenants_max": 5
+  }
 }

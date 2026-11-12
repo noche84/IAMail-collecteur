@@ -1,0 +1,9 @@
+{
+  "extraction": {
+    "de": "luc.henry@entreprise.be"
+  },
+  "deterministe": {
+    "expediteur_humain": 1,
+    "urgence": "haute"
+  }
+}

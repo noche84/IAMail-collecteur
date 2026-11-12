@@ -1,17 +1,46 @@
 {
-  "_commentaire": "Identité versionnée du moteur de tri partagé (prompt + règles + taxonomie). Lu par le harnais Python (compagnon) et le harnais PHP (GesEnt). Transmis à chaque ingestion ; base de la table moteur_versions côté GesEnt. Incrémenter 'version' à chaque changement de prompt.txt / regles.json / taxonomie.json.",
+  "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (Python compagnon, PHP GesEnt). Transmis à chaque ingestion ; base de la table moteur_versions côté GesEnt. La version du MOTEUR est indépendante de celle d'un harnais (ex. compagnon v1.13.0). Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (voir README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "1.0.0",
-  "fichiers": ["prompt.txt", "regles.json", "taxonomie.json"],
-  "contrat_sortie": {
-    "categorie": "∈ taxonomie",
+  "version": "1.1.0",
+  "date": "2026-11-12",
+  "fichiers": [
+    "prompt.txt",
+    "regles.json",
+    "taxonomie.json",
+    "sortie.schema.json"
+  ],
+  "sha256": {
+    "prompt.txt": "be1cd2c4c89cf81444ca29e69313eefd34fd6f9186dd07d0841e9e68d1880b7a",
+    "regles.json": "f7c9f681651614a7893c38f65e3f868c2579d7e0fe1f1ed14f0c8b5f1aed5805",
+    "taxonomie.json": "341d6b54a8a0814df5779d09267e3f36dda5f7fe760d9ab1f6875cc6dfdb3b18",
+    "sortie.schema.json": "7bc71a15d41b659d54bc14d17456d8428988cc1830b23fb09b4d81bae0c59ea4"
+  },
+  "contrat_sortie": "sortie.schema.json",
+  "contrat_sortie_resume": {
+    "categorie": "nom ∈ taxonomie (sinon 'autre')",
     "action_attendue": "bool",
-    "tache": "str",
+    "tache": "str | null",
     "echeance": "AAAA-MM-JJ | aucune",
     "pression": "maintenant | cette_semaine | ce_mois | aucune",
     "priorite": "haute | normale | basse",
     "resume": "str",
-    "question": "str (rempli uniquement en cas de doute)",
+    "question": "str | null (rempli uniquement en cas de doute)",
     "confiance": "haute | moyenne | faible"
+  },
+  "regles_format": 2,
+  "harnais_requis": {
+    "_commentaire": "Clés de regles.json introduites en 1.1.0 qu'un harnais doit implémenter pour être conforme. Un harnais qui ne les implémente pas reste fonctionnel mais diverge (les tests de conformité le montrent).",
+    "nouvelles_cles": [
+      "regex_local_humain",
+      "marketing_indices_label",
+      "precedence_bulk",
+      "categories_importantes",
+      "mots_suspects",
+      "domaines_reseau_social",
+      "strategie_categorie",
+      "fil_prefixes",
+      "fil_mots_vides",
+      "parametres"
+    ]
   }
 }

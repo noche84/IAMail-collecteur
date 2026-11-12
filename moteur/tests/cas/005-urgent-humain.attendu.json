@@ -1,0 +1,10 @@
+{
+  "extraction": {
+    "de": "marie.martin@entreprise.be"
+  },
+  "deterministe": {
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "urgence": "haute"
+  }
+}
