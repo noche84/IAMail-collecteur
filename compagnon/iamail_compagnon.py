@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.12.1"
+VERSION = "1.12.2"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -651,6 +651,41 @@ def _domaine(adresse):
     return adresse.split("@", 1)[1].lower() if adresse and "@" in adresse else ""
 
 
+def _norm_texte(s):
+    """Minuscule, sans accents, apostrophes → espaces (pour un matching par mots)."""
+    s = _sans_accents((s or "").lower())
+    return s.replace("'", " ").replace("’", " ")
+
+
+def _contient_mot(texte, mots):
+    """Vrai si l'un des mots/expressions apparaît comme MOT ENTIER dans texte
+    (texte déjà normalisé par _norm_texte). Évite « ups » dans « setups »."""
+    for m in mots:
+        mm = _norm_texte(m).strip()
+        if mm and re.search(r'(?<!\w)' + re.escape(mm) + r'(?!\w)', texte):
+            return True
+    return False
+
+
+def _domaine_contient(dom, tokens):
+    """Vrai si le domaine correspond à l'un des tokens sur une FRONTIÈRE DE LABEL
+    (label complet, ou suffixe de domaine pour un token avec point).
+    Évite « ing » dans « booking.com » (labels = [booking, com])."""
+    if not dom:
+        return False
+    labels = dom.split(".")
+    for t in tokens:
+        t = _sans_accents(t.lower()).strip(". ")
+        if not t:
+            continue
+        if "." in t:
+            if dom == t or dom.endswith("." + t):
+                return True
+        elif t in labels:
+            return True
+    return False
+
+
 def _est_important(texte, categorie, de_spec, importants):
     """Touche à l'argent / la sécurité / une transaction / un contrat ?"""
     if categorie in ("facture", "devis", "commande", "livraison",
@@ -659,9 +694,9 @@ def _est_important(texte, categorie, de_spec, importants):
     dom = _domaine(de_spec)
     if de_spec in importants or dom in importants:
         return True
-    if any(tok in dom for tok in DOMAINES_IMPORTANTS):
+    if _domaine_contient(dom, DOMAINES_IMPORTANTS):
         return True
-    return any(k in texte for k in SUJETS_IMPORTANTS)
+    return _contient_mot(texte, SUJETS_IMPORTANTS)
 
 
 def classer(h, mes_adresses, importants=()):
@@ -676,7 +711,7 @@ def classer(h, mes_adresses, importants=()):
     de_spec = (_adresses_spec(de) or [""])[0]
     de_local = de_spec.split("@", 1)[0] if de_spec else ""
     sujet = h.get("subject") or ""
-    texte = _sans_accents((sujet + " " + de).lower())
+    texte = _norm_texte(sujet + " " + de)
 
     to = _adresses_spec(h.get("to"))
     cc = _adresses_spec(h.get("cc"))
@@ -703,7 +738,7 @@ def classer(h, mes_adresses, importants=()):
     # --- Catégorie ---------------------------------------------------------
     categorie, conf_cat = "autre", "faible"
     for nom, mots in REGLES_CATEGORIE:
-        if any(m in texte for m in mots):
+        if _contient_mot(texte, mots):
             categorie, conf_cat = nom, "moyenne"
             break
     if categorie == "autre" and bulk:
@@ -717,13 +752,13 @@ def classer(h, mes_adresses, importants=()):
     suspect = bool(
         reply_to and _domaine(reply_to) and de_spec
         and _domaine(reply_to) != _domaine(de_spec)
-        and any(m in texte for m in ("paiement", "facture", "urgent", "compte", "mot de passe", "iban"))
+        and _contient_mot(texte, ("paiement", "facture", "urgent", "compte", "mot de passe", "iban"))
     )
 
     # --- Urgence -----------------------------------------------------------
     # Le vocabulaire d'urgence ne compte que s'il vient d'un humain : sinon
     # c'est du marketing qui crie « urgent / rappel / échéance ».
-    a_mot_urgent = any(m in texte for m in MOTS_URGENTS)
+    a_mot_urgent = _contient_mot(texte, MOTS_URGENTS)
     if bulk:
         urgence = "basse"
     elif a_mot_urgent and humain:
@@ -1061,8 +1096,7 @@ def profils_expediteurs(cx):
         d = _dt_message(dm)
         jd = _jours_depuis(d)
         recent = jd is not None and jd <= 30
-        texte = _sans_accents((sujet or "").lower())
-        urgent_ton = any(m in texte for m in MOTS_URGENTS)
+        urgent_ton = _contient_mot(_norm_texte(sujet or ""), MOTS_URGENTS)
         fkey = _sujet_fil(sujet)
 
         spec = (_adresses_spec(de or "") or [""])[0]
@@ -1140,6 +1174,8 @@ def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
         pre.append("courrier de masse")
     if row["important"]:
         pre.append("marqué important")
+    if row.get("suspect"):
+        pre.append("soupçon d'hameçonnage (Reply-To différent)")
     return (
         f"DATE DU JOUR: {aujourdhui}\n"
         f"CATÉGORIES POSSIBLES: {cats}\n"
@@ -1265,7 +1301,7 @@ def cmd_analyser_ia(args):
         params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
     cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
     sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
-           "expediteur_humain, important, categorie "
+           "expediteur_humain, important, suspect, categorie "
            "FROM messages WHERE " + cond_source + "categorie IS NOT NULL "
            "AND (bulk=0 OR important=1)" + filtre_date +
            " ORDER BY date_mail DESC")
@@ -1273,7 +1309,7 @@ def cmd_analyser_ia(args):
         sql += f" LIMIT {int(args.limite)}"
     rows = cx.execute(sql, params).fetchall()
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "categorie"]
+            "expediteur_humain", "important", "suspect", "categorie"]
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")

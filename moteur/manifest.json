@@ -1,0 +1,17 @@
+{
+  "_commentaire": "Identité versionnée du moteur de tri partagé (prompt + règles + taxonomie). Lu par le harnais Python (compagnon) et le harnais PHP (GesEnt). Transmis à chaque ingestion ; base de la table moteur_versions côté GesEnt. Incrémenter 'version' à chaque changement de prompt.txt / regles.json / taxonomie.json.",
+  "nom": "moteur-tri-iaemail",
+  "version": "1.0.0",
+  "fichiers": ["prompt.txt", "regles.json", "taxonomie.json"],
+  "contrat_sortie": {
+    "categorie": "∈ taxonomie",
+    "action_attendue": "bool",
+    "tache": "str",
+    "echeance": "AAAA-MM-JJ | aucune",
+    "pression": "maintenant | cette_semaine | ce_mois | aucune",
+    "priorite": "haute | normale | basse",
+    "resume": "str",
+    "question": "str (rempli uniquement en cas de doute)",
+    "confiance": "haute | moyenne | faible"
+  }
+}
