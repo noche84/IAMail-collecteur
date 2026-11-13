@@ -7,9 +7,22 @@
 # Sans argument, prend compagnon/dist/iamail (sortie de construire-linux.sh).
 set -e
 ICI="$(cd "$(dirname "$0")" && pwd)"
-EXE="${1:-$ICI/../compagnon/dist/iamail}"
-[ -x "$EXE" ] || { echo "Exécutable introuvable : $EXE
-Construis-le d'abord :  bash empaquetage/construire-linux.sh"; exit 1; }
+
+# Trouve l'exécutable : argument, puis emplacements usuels (dépôt OU bundle à plat).
+EXE="${1:-}"
+if [ -z "$EXE" ]; then
+  for c in "$ICI/iamail" "$ICI/dist/iamail" "$ICI/../compagnon/dist/iamail" "$ICI/../dist/iamail"; do
+    [ -x "$c" ] && EXE="$c" && break
+  done
+fi
+[ -n "$EXE" ] && [ -x "$EXE" ] || { echo "Exécutable introuvable.
+Passe son chemin en argument, ou construis-le :  bash construire-linux.sh"; exit 1; }
+
+# Trouve config.exemple.json (dépôt OU bundle à plat).
+EXEMPLE=""
+for c in "$ICI/config.exemple.json" "$ICI/../compagnon/config.exemple.json" "$ICI/../config.exemple.json"; do
+  [ -f "$c" ] && EXEMPLE="$c" && break
+done
 
 BIN="$HOME/.local/bin"; CFG="$HOME/.config/iamail"
 UNIT="$HOME/.config/systemd/user"; APPS="$HOME/.local/share/applications"
@@ -25,8 +38,8 @@ if [ ! -f "$CFG/env" ]; then
 fi
 
 # Config — créée une fois, à personnaliser (boîte, adresses, dossiers).
-if [ ! -f "$CFG/config.json" ]; then
-  cp "$ICI/../compagnon/config.exemple.json" "$CFG/config.json"
+if [ ! -f "$CFG/config.json" ] && [ -n "$EXEMPLE" ]; then
+  cp "$EXEMPLE" "$CFG/config.json"
   echo "• Config créée : $CFG/config.json  (à personnaliser : mbox_sources, mes_adresses, dossiers)"
 fi
 
