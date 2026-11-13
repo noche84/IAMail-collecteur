@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.15.0"
+VERSION = "1.15.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -978,6 +978,7 @@ COLONNES_ANALYSE = {
     "ia_echeance": "TEXT", "ia_pression": "TEXT", "ia_priorite": "TEXT",
     "ia_urgence": "TEXT", "ia_justification": "TEXT", "case_topo": "TEXT",  # moteur 2.0
     "ia_resume": "TEXT", "ia_question": "TEXT", "ia_confiance": "TEXT",
+    "ia_extensions": "TEXT",   # champs des extensions actives (JSON), moteur 2.0
     "ia_source": "TEXT", "ia_at": "TEXT",
     "non_lu": "INTEGER", "etat": "TEXT",
     "tb_sync": "TEXT",   # état déjà appliqué dans Thunderbird (retour-mail bidirectionnel)
@@ -1275,13 +1276,61 @@ _RE_ECHEANCE = re.compile(r'^(aucune|\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])
 _RE_CATEGORIE = re.compile(r'^[a-z_]{1,50}$')
 
 
-def valider_sortie(res, taxo_noms):
+def _valider_schema(v, schema):
+    """Mini-validateur JSON-Schema (sous-ensemble : type, enum, min/maxLength,
+    properties, required, additionalProperties:false). Pour les champs d'extension."""
+    t = schema.get("type")
+    if t is not None:
+        types = t if isinstance(t, list) else [t]
+        bon = any(
+            (tt == "null" and v is None)
+            or (tt == "string" and isinstance(v, str))
+            or (tt == "boolean" and isinstance(v, bool))
+            or (tt == "object" and isinstance(v, dict))
+            or (tt == "array" and isinstance(v, list))
+            or (tt == "integer" and isinstance(v, int) and not isinstance(v, bool))
+            or (tt == "number" and isinstance(v, (int, float)) and not isinstance(v, bool))
+            for tt in types)
+        if not bon:
+            return False, f"type attendu {types}"
+    if "enum" in schema and v not in schema["enum"]:
+        return False, "hors enum"
+    if isinstance(v, str):
+        if "maxLength" in schema and len(v) > schema["maxLength"]:
+            return False, "trop long"
+        if "minLength" in schema and len(v) < schema["minLength"]:
+            return False, "trop court"
+    if isinstance(v, dict):
+        props = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            for k in v:
+                if k not in props:
+                    return False, f"clé en trop : {k}"
+        for k in schema.get("required", []):
+            if k not in v:
+                return False, f"clé manquante : {k}"
+        for k, sub in props.items():
+            if k in v:
+                ok, e = _valider_schema(v[k], sub)
+                if not ok:
+                    return False, f"{k}.{e}"
+    return True, None
+
+
+def valider_sortie(res, taxo_noms, extensions=()):
     """Valide et normalise le jugement IA contre le tronc commun 2.0
-    (sortie.schema.json). Ordre : pré-normalisation (clés inconnues retirées,
-    ''→null pour tache/question) ; validation ; catégorie ∉ taxonomie → 'autre'.
-    Renvoie (ok, res_normalise, erreur). Échec → ia_source='erreur', repli déterministe."""
-    REQUIS = ("categorie", "urgence", "action_attendue", "tache", "echeance",
-              "justification", "resume", "question", "confiance")
+    (sortie.schema.json) PLUS les champs des extensions actives. Ordre :
+    pré-normalisation (clés inconnues retirées, ''→null) ; tronc ; extensions ;
+    catégorie ∉ taxonomie → 'autre'. Renvoie (ok, res_normalise, erreur).
+    Échec → ia_source='erreur', repli déterministe."""
+    REQUIS = ["categorie", "urgence", "action_attendue", "tache", "echeance",
+              "justification", "resume", "question", "confiance"]
+    props_ext = {}
+    for e in extensions:                          # champs ajoutés par les extensions actives
+        for k in e.get("requis", []):
+            if k not in REQUIS:
+                REQUIS.append(k)
+        props_ext.update(e.get("proprietes", {}))
     if not isinstance(res, dict):
         return False, None, "réponse non-objet"
     inconnues = [k for k in res if k not in REQUIS]
@@ -1309,6 +1358,10 @@ def valider_sortie(res, taxo_noms):
         return False, None, "categorie format"
     if not isinstance(r["echeance"], str) or not _RE_ECHEANCE.match(r["echeance"]):
         return False, None, "echeance format"
+    for k, schema in props_ext.items():           # champs d'extension
+        ok, e = _valider_schema(r.get(k), schema)
+        if not ok:
+            return False, None, f"extension {k} : {e}"
     if r["categorie"] not in taxo_noms:          # contrainte hors-schéma
         r["categorie_proposee"] = r["categorie"]
         r["categorie"] = "autre"
@@ -1759,7 +1812,7 @@ def cmd_analyser_ia(args):
 
         # Validation stricte : une réponse non conforme (ou un mail piégé) ne pilote
         # jamais le cockpit → ia_source='erreur', repli sur le déterministe.
-        ok, res, err = valider_sortie(res, taxo_noms)
+        ok, res, err = valider_sortie(res, taxo_noms, exts)
         if not ok:
             erreurs += 1
             if erreurs <= 5:
@@ -1770,14 +1823,20 @@ def cmd_analyser_ia(args):
 
         case = deduire_case_topo(res["urgence"], res["echeance"],
                                  bool(res["action_attendue"]), aujourdhui)
+        # Champs des extensions actives, conservés en JSON (rien n'est perdu).
+        cles_ext = [k for e in exts for k in e.get("requis", [])]
+        ext_vals = {k: res.get(k) for k in cles_ext}
         cx.execute(
             """UPDATE messages SET ia_categorie=?, ia_urgence=?, ia_action=?, ia_tache=?,
                ia_echeance=?, ia_justification=?, case_topo=?, ia_resume=?, ia_question=?,
-               ia_confiance=?, ia_source=?, ia_moteur_version=?, ia_at=? WHERE message_id=?""",
+               ia_confiance=?, ia_extensions=?, ia_source=?, ia_moteur_version=?, ia_at=?
+               WHERE message_id=?""",
             (res["categorie"], res["urgence"], int(bool(res["action_attendue"])),
              res["tache"], res["echeance"], res["justification"], case,
-             res["resume"], res["question"], res["confiance"], fournisseur,
-             moteur_version, datetime.now(timezone.utc).isoformat(), row["message_id"]),
+             res["resume"], res["question"], res["confiance"],
+             json.dumps(ext_vals, ensure_ascii=False) if ext_vals else None,
+             fournisseur, moteur_version,
+             datetime.now(timezone.utc).isoformat(), row["message_id"]),
         )
         faits += 1
         if res.get("question"):
