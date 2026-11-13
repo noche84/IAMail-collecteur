@@ -3,6 +3,10 @@
   "dossier_destination": "/media/serveur/ArchiveIAMail",
   "base_sqlite": "/media/serveur/ArchiveIAMail/iamail_index.sqlite3",
   "deplacer": true,
+  "collecteur": "thunderbird",
+  "_collecteur_note": "source des mails : 'thunderbird' (lit le mbox, défaut) ou 'outlook' (pilote Outlook classique en COM, Windows). En mode outlook, le compagnon fait aussi le retour-mail (étiquette « Traité IAMail » + lu) directement.",
+  "outlook_dossiers": [],
+  "_outlook_dossiers_note": "dossiers Outlook à relever, ex. [\"Compte/Boîte de réception\"] ; vide = Boîte de réception par défaut.",
   "mbox_sources": [
     "/home/asus/.var/app/org.mozilla.thunderbird_esr/.thunderbird/kb7fqa9k.default-esr/ImapMail/imap.gmail.com/INBOX"
   ],

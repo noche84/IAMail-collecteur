@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.16.0"
+VERSION = "1.17.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -584,19 +584,30 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
     return bilan
 
 
+def _collecteur(cfg):
+    """Collecteur configuré : 'thunderbird' (défaut, lit le mbox) ou 'outlook' (COM)."""
+    return (cfg.get("collecteur") or "thunderbird").lower()
+
+
 def cmd_import(args):
     cfg = charger_config(args.config)
     cx = connexion(cfg["base_sqlite"])
-    sources = []
-    if args.mbox:
-        sources = [args.mbox]
-    else:
-        sources = cfg.get("mbox_sources", [])
-    if not sources:
-        raise SystemExit(
-            "Indiquez un mbox : --mbox <chemin>  ou  'mbox_sources' dans la config."
-        )
+    _assurer_colonnes(cx)
     try:
+        if _collecteur(cfg) == "outlook":
+            import collecteur_outlook as outlook
+            if not outlook.disponible():
+                raise SystemExit("Collecteur Outlook : pywin32 introuvable "
+                                 "(installe-le, ou lance sur un poste Windows avec Outlook).")
+            faits, doublons = outlook.relever(cfg, cx, sys.modules[__name__],
+                                              limite=args.limite)
+            print(f"[{NOM}] Outlook : {faits} nouveau(x), {doublons} déjà connu(s).")
+            return
+        sources = [args.mbox] if args.mbox else cfg.get("mbox_sources", [])
+        if not sources:
+            raise SystemExit(
+                "Indiquez un mbox : --mbox <chemin>  ou  'mbox_sources' dans la config."
+            )
         for src in sources:
             importer_mbox(cfg, cx, src, limite=args.limite)
     finally:
@@ -987,9 +998,11 @@ COLONNES_ANALYSE = {
     "ia_extensions": "TEXT",   # champs des extensions actives (JSON), moteur 2.0
     "ia_source": "TEXT", "ia_at": "TEXT",
     "non_lu": "INTEGER", "etat": "TEXT",
-    "tb_sync": "TEXT",   # état déjà appliqué dans Thunderbird (retour-mail bidirectionnel)
+    "tb_sync": "TEXT",   # état déjà appliqué dans le client (retour-mail bidirectionnel)
     "extrait": "TEXT",   # corps du mail en texte, pour l'analyse IA
     "ia_moteur_version": "TEXT",   # version du moteur qui a produit le jugement
+    "source_ref": "TEXT",   # réf. côté client (EntryID Outlook) pour le retour-mail
+    "source_type": "TEXT",  # collecteur d'origine : thunderbird | outlook
 }
 
 
@@ -2663,6 +2676,20 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
             print(f"[{NOM}] (IA) {e}")
         except Exception as e:
             print(f"[{NOM}] IA: {e}")
+    # Retour-mail Outlook : l'agent applique « Traité » (étiquette + lu) et relit les
+    # changements faits dans Outlook — en direct, même processus, pas d'extension.
+    try:
+        cfg = charger_config(cfg_path)
+        if _collecteur(cfg) == "outlook":
+            import collecteur_outlook as outlook
+            if outlook.disponible():
+                cx = connexion(cfg["base_sqlite"])
+                try:
+                    outlook.appliquer_retour(cfg, cx, sys.modules[__name__])
+                finally:
+                    cx.close()
+    except Exception as e:
+        print(f"[{NOM}] retour Outlook: {e}")
 
 
 def cmd_service(args):

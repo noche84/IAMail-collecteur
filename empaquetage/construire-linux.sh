@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")/../compagnon"
 python3 -m PyInstaller --noconfirm --onefile --name iamail \
   --add-data "../moteur:moteur" \
+  --hidden-import collecteur_outlook \
   iamail_compagnon.py
 echo
 echo "✅ Exécutable : $(cd .. && pwd)/compagnon/dist/iamail"
