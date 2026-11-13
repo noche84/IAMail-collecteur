@@ -1,10 +1,17 @@
 {
   "extraction": {
     "de": "paul.nelis@entreprise.be",
-    "cle_fil": "reunion de coordination herstal"
+    "cle_fil": "reunion de coordination herstal",
+    "message_id": "cas-008@exemple.be"
   },
   "deterministe": {
     "categorie": "rendez_vous",
-    "expediteur_humain": 1
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
   }
 }

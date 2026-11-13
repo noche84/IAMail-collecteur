@@ -1,0 +1,29 @@
+DATE DU JOUR : {{date_du_jour}}
+
+NIVEAUX D'URGENCE, du plus urgent au moins urgent :
+{{niveaux}}
+
+CATÉGORIES :
+{{categories}}
+
+EXPÉDITEUR : {{expediteur}}
+{{#expediteur_connu}}CONNU DE L'ENTREPRISE : {{expediteur_connu}}
+{{/expediteur_connu}}{{#profil}}PROFIL : {{profil}}
+{{/profil}}{{#relances}}RELANCE : {{relances}}
+{{/relances}}{{#memoire}}MÉMOIRE : {{memoire}}
+{{/memoire}}PRÉ-CLASSEMENT AUTOMATIQUE : {{pre_classement}}
+SIGNAUX REPÉRÉS : {{signaux}}
+{{#exemples}}
+MESSAGES SEMBLABLES DÉJÀ CLASSÉS PAR UNE PERSONNE (jurisprudence) :
+{{exemples}}
+{{/exemples}}
+--- EMAIL ---
+De : {{de}}
+À : {{a}}
+{{#cc}}Cc : {{cc}}
+{{/cc}}Objet : {{objet}}
+Reçu le : {{date_mail}}
+Pièces jointes : {{pieces_jointes}}
+<message>
+{{extrait}}
+</message>

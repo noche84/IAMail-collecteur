@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "cle_fil": "reponse automatique : absente jusqu au 20 novembre",
+    "message_id": "cas-024@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "reponse_auto",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": []
+  }
+}

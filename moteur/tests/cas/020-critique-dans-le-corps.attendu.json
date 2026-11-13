@@ -1,0 +1,19 @@
+{
+  "extraction": {
+    "de": "claire.dubois@gmail.com",
+    "message_id": "cas-020@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "critique",
+    "signaux": [
+      "bebe",
+      "plus de chauffage"
+    ]
+  }
+}

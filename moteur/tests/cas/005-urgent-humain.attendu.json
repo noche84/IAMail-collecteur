@@ -1,10 +1,18 @@
 {
   "extraction": {
-    "de": "marie.martin@entreprise.be"
+    "de": "marie.martin@entreprise.be",
+    "message_id": "cas-005@exemple.be"
   },
   "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
     "expediteur_humain": 1,
     "bulk": 0,
-    "urgence": "haute"
+    "important": 0,
+    "suspect": 0,
+    "urgence": "haute",
+    "signaux": [
+      "urgent"
+    ]
   }
 }

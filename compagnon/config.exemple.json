@@ -10,8 +10,10 @@
   "expediteurs_importants": [],
   "moteur_dir": "",
   "ia_jours": 0,
-  "ia_extrait_max": 2000,
-  "_ia_extrait_max_note": "nb max de caractères du corps envoyés à l'IA (0 = objet+expéditeur seuls ; 2000 ≈ l'essentiel ; 8000+ ≈ corps complet). Plus grand = jugements plus fins mais plus de tokens.",
+  "ia_extrait_max": 4000,
+  "_ia_extrait_max_note": "nb max de caractères du corps envoyés à l'IA (0 = objet seul ; 4000 = défaut moteur 2.0 ; 8000+ ≈ corps complet). Plus grand = jugements plus fins mais plus de tokens.",
+  "extensions": [],
+  "_extensions_note": "extensions du moteur à activer (donnée, pas code) : [] = aucune (standalone). GesEnt active p.ex. [\"action\",\"chantier\"].",
   "ia": {
     "fournisseur": "mock",
     "endpoint": "https://api.mistral.ai/v1/chat/completions",

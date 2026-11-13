@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "extrait_debut": "Réparation effectuée hier",
+    "message_id": "cas-017@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "suivi_chantier",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

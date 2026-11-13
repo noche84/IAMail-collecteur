@@ -1,10 +1,19 @@
 {
   "extraction": {
-    "de": "no-reply@mg.marque.com"
+    "de": "no-reply@mg.marque.com",
+    "message_id": "cas-006@exemple.be"
   },
   "deterministe": {
+    "categorie": "newsletter",
+    "pour_moi": 1,
     "expediteur_humain": 0,
     "bulk": 1,
-    "urgence": "basse"
+    "important": 0,
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": [
+      "derniere relance",
+      "urgent"
+    ]
   }
 }

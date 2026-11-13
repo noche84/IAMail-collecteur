@@ -1,9 +1,17 @@
 {
   "extraction": {
     "de": "contact@asbl.be",
-    "extrait_debut": "Bonjour,"
+    "extrait_debut": "Bonjour,\nVous êtes invité.",
+    "message_id": "cas-013@exemple.be"
   },
   "deterministe": {
-    "categorie": "rendez_vous"
+    "categorie": "rendez_vous",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
   }
 }

@@ -1,45 +1,52 @@
 {
-  "_commentaire": "Donnée partagée du moteur de tri IAMail/IAEmail. Lue par le harnais Python (compagnon) et le harnais PHP (GesEnt). Source de vérité unique des règles déterministes ET de leurs paramètres. Modifier ici, pas dans le code. Format plat (listes) volontairement conservé pour rester lisible par les harnais existants ; la manière de COMPARER chaque clé est décrite dans '_semantique' et doit être appliquée à la lettre par les deux harnais.",
-  "format": 2,
+  "_commentaire": "Donnée partagée du moteur de tri IAMail/IAEmail, format 3 (moteur 2.0.0). Lue par chaque harnais (compagnon Python, GesEnt PHP, futur agent Outlook). Les listes et seuils sont ici ; l'ALGORITHME qui les applique est décrit pas à pas dans '_algorithme' et la manière de comparer dans '_semantique'. Les deux harnais doivent les appliquer à la lettre ; le jeu tests/ en est la preuve. Ce qui est propre à une entreprise (catégories, niveaux, signaux) est dans taxonomie.json, pas ici.",
+  "format": 3,
 
   "_semantique": {
-    "normalisation": "Tout texte comparé (objet, From, mots-clés) est : mis en minuscules ; décomposé en Unicode NFD puis débarrassé des marques combinantes (catégorie Mn) ; apostrophes ' et ’ remplacées par une espace. Aucune translittération (œ reste œ). Python : unicodedata.normalize('NFD', s) + filtre category != 'Mn'. PHP : Normalizer::normalize($s, Normalizer::FORM_D) puis preg_replace('/\\p{Mn}/u', '', $s).",
-    "mot": "MOT ENTIER sur le texte normalisé : (?<!\\w)MOT(?!\\w), mot-clé lui-même normalisé, regex en mode Unicode (PHP : flag /u obligatoire). Un mot-clé de plusieurs mots matche la séquence exacte.",
-    "label": "Sur le domaine de l'expéditeur découpé en labels. Token SANS point : égal à l'un des labels (« ing » matche ing.be, pas booking.com). Token AVEC point : domaine égal au token ou finissant par '.' + token.",
+    "normalisation": "Pour tout texte comparé ET pour tout mot-clé : minuscules ; Unicode NFD puis retrait des marques combinantes (catégorie Mn) ; apostrophes ' ’ ‘ ` ´ remplacées par une espace ; suites d'espaces (y compris retours à la ligne) réduites à une espace. Aucune translittération (œ reste œ). Python : unicodedata.normalize('NFD', s), filtre unicodedata.category(c) != 'Mn'. PHP : Normalizer::normalize($s, Normalizer::FORM_D) puis preg_replace('/\\p{Mn}+/u', '', $s). Ne PAS utiliser Str::ascii() ni iconv //TRANSLIT.",
+    "mot": "MOT ENTIER sur le texte normalisé : (?<!\\w)MOT(?!\\w) où MOT est le mot-clé normalisé puis échappé. Python : re.search sur str. PHP : preg_match avec le flag /u (indispensable : il rend \\w Unicode ; testé PHP 8.3). Un mot-clé de plusieurs mots matche la séquence exacte.",
+    "label": "Sur le domaine de l'expéditeur (minuscules) découpé sur les points. Token SANS point : égal à l'un des labels (« ing » matche ing.be, pas booking.com). Token AVEC point : domaine égal au token ou finissant par '.' + token.",
     "egal": "Égalité stricte après minuscules.",
     "sous_chaine": "Le token apparaît n'importe où dans la valeur (après minuscules).",
-    "texte_compare": "Le déterministe compare l'OBJET + l'en-tête From complet (nom affiché inclus). Il ne lit PAS le corps : le corps est réservé à l'IA.",
-
-    "expediteurs_auto": "egal sur la partie locale",
-    "local_generique": "egal sur la partie locale",
-    "local_auto_indices": "sous_chaine dans la partie locale",
-    "regex_local_humain": "Domaine NON freemail : expéditeur humain si la partie locale matche cette regex (syntaxe commune Python re / PCRE). Freemail : humain si la partie locale n'est ni auto ni générique.",
-    "freemail": "egal sur le domaine complet",
-    "marketing_labels": "egal à l'un des labels du domaine (si non freemail)",
-    "marketing_indices_label": "sous_chaine dans l'un des labels du domaine (si non freemail), ex. newsroom, mailer1",
-    "precedence_bulk": "Courrier de masse si List-Unsubscribe OU List-Id présent, OU Precedence ∈ cette liste, OU partie locale ∈ expediteurs_auto, OU domaine marketing.",
-    "mots_urgents": "mot ; ne compte que si l'expéditeur est humain ET le courrier n'est pas de masse",
-    "sujets_importants": "mot ; liste large volontairement : le déterministe ne fait que remonter 'basse' → 'normale', l'IA tranche",
-    "domaines_importants": "label. 'bnpparibas' ne matche PAS bnpparibasfortis.be (un seul label) : lister chaque domaine composé tel quel",
-    "categories_importantes": "Toute catégorie déterministe de cette liste rend le message important (jamais enterré)",
-    "mots_suspects": "mot. Soupçon d'hameçonnage si Reply-To présent ET domaine(Reply-To) ≠ domaine(From) ET l'un de ces mots présent",
-    "domaines_reseau_social": "sous_chaine dans le domaine. Masse sans autre catégorie → 'reseau_social' si match, sinon 'newsletter'",
-    "strategie_categorie": "'mot_le_plus_long' : parmi les règles de regles_categorie qui matchent (en mot), retenir celle dont le mot-clé matché est le plus long (en caractères, normalisé) ; à égalité, la première dans l'ordre. « suivi de commande » (livraison) l'emporte donc sur « commande ». 'premiere' : ancien comportement (première règle qui matche).",
-    "fil_prefixes": "Clé de fil = objet normalisé (donc « Rép: » devient « rep: »), préfixes retirés en tête (répétés, insensibles à la casse, chacun suivi de ':' avec espaces optionnels), [tags] retirés, espaces compactées",
-    "fil_mots_vides": "Mots exclus du regroupement flou des fils (topo)",
-    "parametres": "Seuils de l'algorithme (voir clés)"
+    "texte_entete": "normalise(objet + ' ' + en-tête From complet, nom affiché inclus). Sert aux catégories, aux sujets importants et au soupçon d'hameçonnage.",
+    "texte_complet": "normalise(objet + ' ' + extrait du corps). Sert UNIQUEMENT aux signaux d'urgence (taxonomie.json).",
+    "adresse": "Adresse nue en minuscules extraite d'un en-tête (From : la première ; To/Cc : toutes). Partie locale = avant '@', domaine = après.",
+    "message_id": "En-tête Message-ID débarrassé des espaces et des chevrons < >, casse conservée. S'il est absent ou vide : 'synth-' + les 32 premiers caractères hexadécimaux de sha256(UTF-8 de : en-tête Date brut sans espaces autour + '|' + adresse From + '|' + objet décodé)).",
+    "cle_fil": "normalise(objet décodé, en conservant la ponctuation hormis les apostrophes) ; puis retrait répété en tête de 'PREFIXE :' (PREFIXE ∈ fil_prefixes, espaces optionnelles avant les deux-points) ; retrait des [étiquettes] ; espaces compactées ; trim.",
+    "extrait": "Corps en texte : concaténation des parties text/plain hors pièces jointes ; à défaut, parties text/html converties en texte (script/style supprimés, <br> et fins de p/div/tr/li/h1-6 → saut de ligne, balises retirées, entités HTML décodées). Puis : fins de ligne \\r\\n et \\r → \\n ; espaces et tabulations compactées en une espace ; espaces retirées en début et fin de CHAQUE ligne ; 3 sauts de ligne ou plus → 2 ; trim. Tronqué à parametres.ia_extrait_max caractères (caractères Unicode, pas octets).",
+    "raison": "Texte libre lisible, NON contractuel : les harnais peuvent le formuler différemment, les tests ne le comparent pas."
   },
+
+  "_algorithme": [
+    "1. HUMAIN. Faux si : pas d'adresse ; partie locale ∈ expediteurs_auto ou ∈ local_generique ; une entrée de local_auto_indices est sous-chaîne de la partie locale. Sinon vrai si domaine ∈ freemail. Sinon vrai si la partie locale matche regex_local_humain.",
+    "2. MASSE (bulk). Vrai si : en-tête List-Unsubscribe ou List-Id non vide ; Precedence (minuscules) ∈ precedence_bulk ; partie locale ∈ expediteurs_auto ; domaine marketing. Domaine marketing = domaine non vide, ∉ freemail, et (un label ∈ marketing_labels, ou un label contient en sous-chaîne une entrée de marketing_indices_label).",
+    "3. AUTOMATIQUE = non humain OU masse.",
+    "4. POUR_MOI. 1 si une adresse de mes_adresses est dans To ; sinon 0 si elle est dans Cc ; sinon null (diffusion/liste). mes_adresses = adresses de la boîte relevée (et de ses alias).",
+    "5. CATÉGORIE. (a) Parmi regles_categorie dont le code existe et est ACTIF dans la taxonomie de l'entreprise, garder celles dont un mot-clé matche (mot) texte_entete ; si strategie_categorie = 'mot_le_plus_long', retenir celle dont le mot-clé matché est le plus long (nombre de caractères du mot-clé normalisé), à égalité la première dans l'ordre ; confiance 'moyenne'. (b) Sinon, domaines_categorie : premier code (dans l'ordre du fichier) dont un token matche le domaine (label) et qui est actif ; confiance 'moyenne'. (c) Sinon, si masse ET non important (calculé en 7 avec la catégorie 'autre') : 'newsletter' si active ; confiance 'moyenne'. (d) Sinon 'autre', confiance 'faible'.",
+    "6. SOUPÇON (suspect). Vrai si Reply-To présent, domaine(Reply-To) non vide et ≠ domaine(From), et un mot de mots_suspects matche (mot) texte_entete.",
+    "7. IMPORTANT. Vrai si : catégorie ∈ categories_importantes ; adresse ou domaine From ∈ liste 'importants' propre à l'utilisateur/entreprise (égalité) ; domaine matche domaines_importants (label) ; un mot de sujets_importants matche (mot) texte_entete.",
+    "8. SIGNAUX. Liste des expressions de taxonomie.signaux (actives) qui matchent (mot) texte_complet, avec leur niveau et leur effet ('monter' pour critique/haute, 'baisser' pour basse). Les signaux qui montent ne COMPTENT que si humain ET non masse ; ils sont listés quand même (champ signaux), avec compte=false.",
+    "9. URGENCE (codes de taxonomie.niveaux, du plus au moins urgent : critique > haute > normale > basse). (a) départ = urgence_defaut de la catégorie retenue. (b) S'il existe un signal qui monte et qui compte : urgence = la plus urgente entre départ et le plus fort de ces signaux. (c) Sinon, s'il existe un signal qui baisse : urgence = la moins urgente entre départ et le plus faible de ces signaux. (d) Sinon : départ. (e) Si pour_moi ≠ 1 (copie ou diffusion) : plafonner à 'normale' (jamais critique/haute par le seul déterministe). (f) Si masse ET non important : 'basse'. (g) Filet : si important et urgence = 'basse' → 'normale'.",
+    "10. SORTIE : categorie, confiance, pour_moi, expediteur_humain, automatique, bulk, important, suspect, urgence, signaux [{expression, niveau, effet, compte}], raison. Booléens écrits 0/1."
+  ],
 
   "expediteurs_auto": [
     "no-reply", "noreply", "donotreply", "do-not-reply", "ne-pas-repondre",
     "nepasrepondre", "mailer-daemon", "postmaster", "bounce", "bounces",
     "notifications", "notification", "newsletter", "news", "mailing"
   ],
-  "mots_urgents": [
-    "urgent", "immediat", "asap", "au plus vite", "rappel", "relance",
-    "derniere relance", "echeance", "expire", "aujourd hui", "avant demain",
-    "delai", "impaye", "mise en demeure", "action requise", "a traiter"
+  "local_generique": [
+    "info", "contact", "team", "hello", "bonjour", "support", "service",
+    "services", "shop", "boutique", "news", "alerts", "alert", "admin",
+    "noreply", "no-reply", "sav", "client", "clients", "rewardclub", "club",
+    "comptabilite", "compta", "facturation", "accounting", "billing", "secretariat", "accueil"
   ],
+  "local_auto_indices": [
+    "noreply", "no-reply", "donotreply", "do_not_reply", "do-not-reply",
+    "nepasrepondre", "ne-pas-repondre", "mailer", "bounce", "notification",
+    "newsletter", "mailing", "automated", "auto-", "-auto", "reply-"
+  ],
+  "regex_local_humain": "^[a-z]+([._-][a-z]+)+$",
   "freemail": [
     "gmail.com", "googlemail.com", "outlook.com", "outlook.be", "hotmail.com",
     "hotmail.be", "hotmail.fr", "live.com", "live.be", "live.fr", "msn.com",
@@ -55,17 +62,32 @@
   ],
   "marketing_indices_label": ["mail", "news", "mailing"],
   "precedence_bulk": ["bulk", "list", "junk"],
-  "local_auto_indices": [
-    "noreply", "no-reply", "donotreply", "do_not_reply", "do-not-reply",
-    "nepasrepondre", "ne-pas-repondre", "mailer", "bounce", "notification",
-    "newsletter", "mailing", "automated", "auto-", "-auto", "reply-"
+
+  "strategie_categorie": "mot_le_plus_long",
+  "regles_categorie": [
+    ["facture_fournisseur", ["facture", "invoice", "note de credit", "releve de factures"]],
+    ["paiement", ["rappel de paiement", "relance de paiement", "avis de paiement", "paiement", "payment", "impaye"]],
+    ["demande_devis", ["devis", "offre de prix", "demande de prix", "quote", "estimation", "chiffrage"]],
+    ["commande_livraison", ["bon de commande", "commande", "order", "confirmation de commande", "livraison", "expedition", "colis", "tracking", "suivi de commande", "bpost", "dpd", "gls", "ups"]],
+    ["rendez_vous", ["rendez-vous", "reunion", "meeting", "convocation", "agenda", "invitation", "rdv", "webinar", "webinaire"]],
+    ["reclamation", ["reclamation", "plainte", "remboursement", "insatisfait", "litige", "garantie"]],
+    ["depannage", ["depannage", "panne", "en panne", "ne fonctionne plus", "fuite"]],
+    ["entretien", ["entretien", "entretien annuel", "contrat d'entretien", "ramonage"]],
+    ["suivi_chantier", ["chantier", "travaux", "avancement", "intervention"]],
+    ["marche_public", ["appel d'offres", "marche public", "cahier des charges", "cahier special des charges", "avis de marche"]],
+    ["administratif", ["onss", "tva", "spf", "permis d'urbanisme", "attestation", "assurance"]],
+    ["personnel", ["candidature", "curriculum", "interim", "secretariat social"]],
+    ["finance", ["votre compte", "your account", "alerte de securite", "security alert", "virement", "iban", "crypto", "wallet", "mot de passe", "password", "extrait de compte", "releve de compte"]],
+    ["reponse_auto", ["reponse automatique", "automatic reply", "auto-reply", "message d'absence", "out of office", "absent du bureau", "accuse de reception", "delivery status notification", "non remis", "undeliverable"]],
+    ["newsletter", ["newsletter", "lettre d'information", "facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]]
   ],
-  "local_generique": [
-    "info", "contact", "team", "hello", "bonjour", "support", "service",
-    "services", "shop", "boutique", "news", "alerts", "alert", "admin",
-    "noreply", "no-reply", "sav", "client", "clients", "rewardclub", "club"
+  "domaines_categorie": [
+    ["finance", ["binance", "coinbase", "kraken", "revolut", "paypal", "stripe", "wise", "kbc", "belfius", "ing", "bnpparibas", "bnpparibasfortis", "fortis", "hellobank", "santander", "argenta", "keytrade", "boursorama", "deutsche-bank", "deutschebank", "crelan", "beobank"]],
+    ["commande_livraison", ["bpost", "dpd", "gls", "gls-group", "ups.com", "dhl", "fedex", "postnl"]],
+    ["administratif", ["myminfin", "minfin", "onss", "socialsecurity", "touring", "axa", "ethias", "baloise", "aginsurance", "p-v.be"]]
   ],
-  "regex_local_humain": "^[a-z]+([._-][a-z]+)+$",
+
+  "categories_importantes": ["facture_fournisseur", "paiement", "demande_devis", "commande_livraison", "rendez_vous", "reclamation", "depannage", "marche_public", "finance"],
   "sujets_importants": [
     "compte", "virement", "transfert", "transfer", "iban", "retrait", "depot",
     "taux", "interet", "assurance", "resiliation", "resilier", "prime",
@@ -84,20 +106,8 @@
     "bpost", "dpd", "gls", "gls-group", "ups.com", "dhl", "fedex",
     "myminfin", "minfin"
   ],
-  "categories_importantes": ["facture", "devis", "commande", "livraison", "rendez_vous", "reclamation"],
   "mots_suspects": ["paiement", "facture", "urgent", "compte", "mot de passe", "iban", "virement", "verification"],
-  "domaines_reseau_social": ["facebook", "linkedin", "instagram", "twitter", "tiktok"],
-  "strategie_categorie": "mot_le_plus_long",
-  "regles_categorie": [
-    ["facture", ["facture", "invoice", "rappel de paiement", "note de credit", "impaye"]],
-    ["devis", ["devis", "offre de prix", "quote", "estimation", "chiffrage"]],
-    ["commande", ["bon de commande", "commande", "order", "confirmation de commande"]],
-    ["livraison", ["livraison", "expedition", "colis", "tracking", "suivi de commande", "bpost", "dpd", "gls", "ups"]],
-    ["rendez_vous", ["rendez-vous", "reunion", "meeting", "convocation", "agenda", "invitation", "rdv", "webinar", "webinaire"]],
-    ["reclamation", ["reclamation", "plainte", "remboursement", "insatisfait", "litige"]],
-    ["reseau_social", ["facebook", "linkedin", "instagram", "twitter", "tiktok", "viadeo"]],
-    ["chantier", ["chantier", "travaux", "intervention", "depannage"]]
-  ],
+
   "fil_prefixes": ["re", "ref", "rep", "fwd", "fw", "tr", "aw", "wg"],
   "fil_mots_vides": [
     "pour", "avec", "votre", "notre", "dans", "vous", "nous", "email",
@@ -105,6 +115,19 @@
     "question", "info", "fwd", "les", "des", "une", "un", "la", "le", "du",
     "de", "et", "re", "tr"
   ],
+
+  "selection_ia": {
+    "_regle": "Un message est envoyé à l'IA sauf s'il est de masse ET non important (règle d'économie ; il reste archivé et visible). Paramétrable : 'ignorer_masse_non_importante' à false = tout passe à l'IA.",
+    "ignorer_masse_non_importante": true
+  },
+
+  "topo": {
+    "_regle": "La CASE du topo (pression) n'est PAS demandée à l'IA : chaque harnais la DÉDUIT du jugement, à l'identique. case_urgence : critique/haute → maintenant ; normale → cette_semaine ; basse → ce_mois si action_attendue, sinon aucune. case_echeance (si echeance ≠ 'aucune', comparée à la date du jour de l'utilisateur) : ≤ aujourd'hui → maintenant ; ≤ aujourd'hui + jours_semaine → cette_semaine ; ≤ aujourd'hui + jours_mois → ce_mois ; sinon aucune. pression = la plus pressante des deux. Exception : si action_attendue est false et que l'urgence n'est pas critique → aucune (information seule). Un message suspect ou classé hameconnage n'est jamais lu à voix haute.",
+    "jours_semaine": 7,
+    "jours_mois": 31,
+    "ordre": ["maintenant", "cette_semaine", "ce_mois", "aucune"]
+  },
+
   "parametres": {
     "fenetre_recent_jours": 30,
     "profil_actif_n_min": 5,
@@ -112,7 +135,11 @@
     "regroupement_mot_longueur_min": 4,
     "regroupement_mots_partages_min": 2,
     "regroupement_jaccard_min": 0.34,
-    "ia_extrait_max_defaut": 2000,
-    "topo_intervenants_max": 5
+    "_regroupement_regle": "Deux fils fusionnent dans le topo si (mots partagés ≥ regroupement_mots_partages_min OU l'un des ensembles de mots est inclus dans l'autre) ET Jaccard ≥ regroupement_jaccard_min.",
+    "ia_extrait_max": 4000,
+    "ia_marque_troncature": "\n[… message tronqué]",
+    "ia_destinataires_max": 10,
+    "topo_intervenants_max": 5,
+    "relance_fenetre_jours": 14
   }
 }

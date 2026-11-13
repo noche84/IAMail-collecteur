@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "message_id": "synth-d068bdbfe4dd01c96955ee3eeebcb413",
+    "de": "anne.lejeune@entreprise.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

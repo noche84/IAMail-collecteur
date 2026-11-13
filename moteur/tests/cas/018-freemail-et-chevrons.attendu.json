@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "message_id": "ABC.123@Exemple.be",
+    "de": "jacques1960@hotmail.com"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

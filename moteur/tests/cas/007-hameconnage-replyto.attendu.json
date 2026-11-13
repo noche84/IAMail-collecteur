@@ -1,8 +1,16 @@
 {
   "extraction": {
-    "de": "support@mabanque.be"
+    "de": "support@mabanque.be",
+    "message_id": "cas-007@exemple.be"
   },
   "deterministe": {
-    "suspect": 1
+    "categorie": "finance",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 1,
+    "urgence": "normale",
+    "signaux": []
   }
 }

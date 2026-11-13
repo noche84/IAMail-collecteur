@@ -1,0 +1,17 @@
+{
+  "extraction": {
+    "de": "sophie.renard@gmail.com",
+    "cle_fil": "demande de devis pour une veranda",
+    "message_id": "cas-016@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "demande_devis",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

@@ -1,18 +1,74 @@
 {
-  "_commentaire": "Taxonomie par défaut (construction). GesEnt la surcharge par entreprise (ADR 0011). Fournie à l'IA dans le prompt.",
+  "_commentaire": "Classement PAR DÉFAUT (construction) du moteur de tri partagé, format 2. C'est la partie que chaque entreprise adapte : GesEnt la recopie en base à la première utilisation (ADR 0011) puis l'entreprise la modifie ; le compagnon IAMail la lit telle quelle (ou une copie locale modifiée). Les descriptions et définitions sont LUES PAR L'IA : on les écrit comme on les expliquerait à une nouvelle secrétaire. Un code ne change jamais ; le libellé, la description, l'urgence par défaut et l'activation sont réglables.",
+  "format": 2,
+
+  "niveaux": [
+    {
+      "code": "critique",
+      "libelle": "Immédiat",
+      "definition": "La sécurité des personnes ou des biens est en jeu, ou un dommage s'aggrave tant que rien n'est fait : plus de chauffage ou d'eau chaude, fuite d'eau ou de gaz, dégât des eaux, électricité coupée, toiture ouverte, structure dangereuse. Ou une échéance légale ou de remise d'offre dans les 48 heures. Ou une alerte de sécurité sur un compte (connexion ou opération non reconnue).",
+      "delai_heures": 4
+    },
+    {
+      "code": "haute",
+      "libelle": "Aujourd'hui",
+      "definition": "Une gêne importante sans danger immédiat, un client mécontent ou une réclamation, une mise en demeure, une échéance dans la semaine, un chantier bloqué en attente d'une réponse, une décision attendue aujourd'hui.",
+      "delai_heures": 24
+    },
+    {
+      "code": "normale",
+      "libelle": "Cette semaine",
+      "definition": "Une demande à traiter dans les jours qui viennent : demande de devis, question sur un chantier en cours, commande, facture, rendez-vous à fixer.",
+      "delai_heures": 72
+    },
+    {
+      "code": "basse",
+      "libelle": "Quand possible",
+      "definition": "Rien ne presse : information, entretien à planifier, prospection commerciale, newsletter, réponse automatique.",
+      "delai_heures": null
+    }
+  ],
+
   "categories": [
-    {"nom": "facture", "description": "Facture d'un fournisseur, rappel ou note de crédit."},
-    {"nom": "devis", "description": "Demande de devis, offre de prix, estimation."},
-    {"nom": "commande", "description": "Bon de commande ou confirmation de commande."},
-    {"nom": "livraison", "description": "Expédition, suivi de colis, livraison, retour."},
-    {"nom": "rendez_vous", "description": "Réunion, convocation, invitation, agenda, rendez-vous."},
-    {"nom": "reclamation", "description": "Réclamation, plainte, litige, demande de remboursement."},
-    {"nom": "chantier", "description": "Suivi de chantier, travaux, intervention, dépannage."},
-    {"nom": "finance", "description": "Banque, crypto, assurance, paiement, contrat, sécurité du compte."},
-    {"nom": "reseau_social", "description": "Notification d'un réseau social."},
-    {"nom": "newsletter", "description": "Lettre d'information, promotion, courrier de masse publicitaire."},
-    {"nom": "hameconnage", "description": "Tentative d'hameçonnage ou courrier frauduleux."},
-    {"nom": "personnel", "description": "Message personnel d'une connaissance."},
-    {"nom": "autre", "description": "Tout le reste."}
-  ]
+    {"code": "depannage", "libelle": "Dépannage, panne", "description": "Une installation ne fonctionne plus ou un dommage est en cours chez un client : chauffage, sanitaire, électricité, toiture, fuite, dégât.", "urgence_defaut": "haute"},
+    {"code": "demande_devis", "libelle": "Demande de devis", "description": "Un client ou un prospect décrit un projet ou des travaux et demande un prix, une visite ou un rendez-vous.", "urgence_defaut": "normale"},
+    {"code": "suivi_chantier", "libelle": "Suivi de chantier", "description": "Échange sur un chantier en cours ou prévu : planning, choix de matériaux, accès, avancement, questions du client ou de l'architecte.", "urgence_defaut": "normale"},
+    {"code": "reclamation", "libelle": "Réclamation, SAV, garantie", "description": "Un client se plaint d'un travail réalisé, signale un défaut ou invoque la garantie.", "urgence_defaut": "haute"},
+    {"code": "entretien", "libelle": "Entretien", "description": "Entretien périodique ou contrat d'entretien à planifier (chaudière, toiture, corniches…).", "urgence_defaut": "basse"},
+    {"code": "rendez_vous", "libelle": "Réunion, rendez-vous", "description": "Réunion, convocation, invitation, agenda, rendez-vous à fixer ou à confirmer.", "urgence_defaut": "normale"},
+    {"code": "commande_livraison", "libelle": "Commande, livraison", "description": "Fournisseur, négoce ou transporteur : confirmation de commande, disponibilité, expédition, suivi de colis, délai ou retard de livraison, retour.", "urgence_defaut": "normale"},
+    {"code": "facture_fournisseur", "libelle": "Facture fournisseur", "description": "Facture, note de crédit ou relevé envoyé par un fournisseur ou un sous-traitant.", "urgence_defaut": "normale"},
+    {"code": "paiement", "libelle": "Paiement, relance", "description": "Paiement reçu ou annoncé, rappel ou relance de paiement, litige sur un montant.", "urgence_defaut": "normale"},
+    {"code": "finance", "libelle": "Banque, compte, sécurité", "description": "Banque, crypto, moyen de paiement : mouvement sur un compte, alerte de connexion ou de sécurité, changement de mot de passe, opération à confirmer.", "urgence_defaut": "normale"},
+    {"code": "marche_public", "libelle": "Appel d'offres, marché public", "description": "Cahier des charges, avis de marché, questions-réponses, date limite de remise d'offre.", "urgence_defaut": "haute"},
+    {"code": "administratif", "libelle": "Administratif, légal", "description": "Assurances, ONSS, TVA, SPF, commune, permis, juridique, comptable, courrier officiel.", "urgence_defaut": "normale"},
+    {"code": "personnel", "libelle": "Personnel, candidature", "description": "Candidature spontanée, intérim, question d'un ouvrier ou d'un employé, secrétariat social.", "urgence_defaut": "basse"},
+    {"code": "prospection", "libelle": "Démarchage commercial", "description": "Offre non sollicitée d'un fournisseur ou d'un prestataire, proposition de partenariat.", "urgence_defaut": "basse"},
+    {"code": "newsletter", "libelle": "Newsletter, information", "description": "Lettre d'information, notification d'un réseau social, invitation à un salon ou à un webinaire, communication de fédération.", "urgence_defaut": "basse"},
+    {"code": "reponse_auto", "libelle": "Réponse automatique", "description": "Message d'absence, accusé de réception, notification automatique, avis de non-remise.", "urgence_defaut": "basse"},
+    {"code": "spam", "libelle": "Spam, publicité", "description": "Publicité de masse sans rapport avec l'activité.", "urgence_defaut": "basse"},
+    {"code": "hameconnage", "libelle": "Hameçonnage, arnaque", "description": "Faux lien de connexion, fausse facture, changement de numéro de compte suspect, demande inhabituelle de paiement urgent.", "urgence_defaut": "haute"},
+    {"code": "prive", "libelle": "Message privé", "description": "Message personnel d'une connaissance, sans rapport avec le travail.", "urgence_defaut": "basse"},
+    {"code": "autre", "libelle": "Autre", "description": "Rien d'autre ne correspond.", "urgence_defaut": "normale"}
+  ],
+
+  "signaux": {
+    "_commentaire": "Expressions repérées dans l'OBJET et le CORPS (mot entier, après normalisation). 'critique' et 'haute' font MONTER l'urgence, et seulement si l'expéditeur est humain et que le courrier n'est pas de masse. 'basse' fait BAISSER, quel que soit l'expéditeur. Un signal qui fait monter l'emporte toujours sur un signal qui fait baisser.",
+    "critique": [
+      "plus de chauffage", "chauffage ne fonctionne plus", "chauffage en panne", "chaudiere en panne", "chaudiere ne demarre plus",
+      "pas d'eau chaude", "plus d'eau chaude", "plus d'eau", "fuite d'eau", "fuite de gaz", "odeur de gaz", "degat des eaux", "inondation", "inonde",
+      "plus d'electricite", "plus de courant", "court-circuit", "disjoncte sans arret", "toiture arrachee", "tuiles tombees", "infiltration",
+      "risque d'effondrement", "menace de s'effondrer", "danger"
+    ],
+    "haute": [
+      "urgent", "immediat", "asap", "au plus vite", "des que possible", "attendue aujourd'hui", "pour aujourd'hui", "avant ce soir", "avant demain", "action requise",
+      "reclamation", "pas satisfait", "mecontent", "inadmissible", "inacceptable", "mise en demeure", "huissier",
+      "dernier rappel", "derniere relance", "impaye", "sous garantie", "date limite", "personne agee", "bebe",
+      "chantier bloque", "chantier a l'arret"
+    ],
+    "basse": [
+      "entretien annuel", "avant l'hiver", "quand vous aurez le temps", "pas presse", "rien ne presse", "pour information", "se desinscrire",
+      "unsubscribe", "newsletter", "message d'absence", "out of office"
+    ]
+  }
 }

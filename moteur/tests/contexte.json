@@ -1,0 +1,11 @@
+{
+  "_commentaire": "Contexte commun à tous les cas de conformité. Chaque harnais l'applique tel quel : boîte de l'utilisateur, liste 'importants' vide, taxonomie par défaut (../taxonomie.json, tout actif), aucune extension.",
+  "mes_adresses": ["moi@ccl.be"],
+  "importants": [],
+  "taxonomie": "../taxonomie.json",
+  "ia_extrait_max": 4000,
+  "comparaison": {
+    "extraction": "Chaque clé présente est comparée à l'égalité. 'a' et 'cc' : listes d'adresses nues en minuscules, dans l'ordre de l'en-tête. 'extrait_debut' : l'extrait doit COMMENCER par cette chaîne.",
+    "deterministe": "Chaque clé présente est comparée à l'égalité. Booléens en 0/1, pour_moi en 1/0/null. 'signaux' : liste TRIÉE (ordre de code point Unicode) des expressions qui ont matché, telles qu'écrites dans taxonomie.json, qu'elles comptent ou non."
+  }
+}

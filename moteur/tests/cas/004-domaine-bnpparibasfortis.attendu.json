@@ -1,8 +1,16 @@
 {
   "extraction": {
-    "de": "info@info.bnpparibasfortis.be"
+    "de": "info@info.bnpparibasfortis.be",
+    "message_id": "cas-004@exemple.be"
   },
   "deterministe": {
-    "important": 1
+    "categorie": "finance",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 1,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
   }
 }

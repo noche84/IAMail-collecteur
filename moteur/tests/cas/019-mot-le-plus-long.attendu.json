@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "de": "comptabilite@fournisseur-sa.be",
+    "message_id": "cas-019@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "paiement",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

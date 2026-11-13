@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "cle_fil": "nœud du probleme",
+    "message_id": "cas-015@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

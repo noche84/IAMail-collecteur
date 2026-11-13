@@ -1,9 +1,16 @@
 {
   "extraction": {
-    "de": "news@mail.booking.com"
+    "de": "news@mail.booking.com",
+    "message_id": "cas-009@exemple.be"
   },
   "deterministe": {
+    "categorie": "newsletter",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 1,
     "important": 0,
-    "bulk": 1
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": []
   }
 }

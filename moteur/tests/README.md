@@ -1,68 +1,55 @@
-# moteur/tests — jeu de conformité partagé
+# moteur/tests — jeu de conformité partagé (moteur 2.x)
 
-But : **garantir que les deux harnais (compagnon Python, GesEnt PHP) produisent le
-même résultat** à partir des mêmes fichiers `moteur/`. C'est le garde-fou contre la
-dérive silencieuse entre implémentations (cf. TRANSMISSION §5).
-
-## Structure
+Garantit que **tous les harnais** (compagnon Python, GesEnt PHP, futurs) produisent
+le même résultat à partir des mêmes fichiers `moteur/`. Un harnais n'est conforme
+que s'il passe **tous** les cas.
 
 ```
-cas/
-  NNN-nom.eml           # un email réel (RFC 822), lu par Python email / PHP mail-mime-parser
-  NNN-nom.attendu.json  # résultat attendu, en deux étages
+contexte.json           # contexte commun : adresses « moi », importants, taxonomie, règles de comparaison
+cas/NNN-nom.eml         # email RFC 822 brut
+cas/NNN-nom.attendu.json
+_generer.py             # régénère les cas à l'identique (attendus écrits À LA MAIN)
 ```
 
-Chaque `.attendu.json` sépare volontairement deux étages, car le parsing d'un `.eml`
-diffère un peu entre bibliothèques :
+## Contexte (identique pour tous les cas)
 
-```json
-{
-  "extraction": {            // ce que le COLLECTEUR extrait de l'eml
-    "de": "jean.dupont@entreprise.be",
-    "cc": ["moi@ccl.be"],
-    "cle_fil": "reunion de coordination herstal",
-    "extrait_debut": "Bonjour,"      // le corps extrait commence par…
-  },
-  "deterministe": {          // ce que le MOTEUR déterministe produit (classer)
-    "pour_moi": 0, "expediteur_humain": 1, "bulk": 0,
-    "important": 1, "suspect": 0, "categorie": "rendez_vous", "urgence": "normale"
-  }
-}
-```
+- `mes_adresses` = `["moi@ccl.be"]`, `importants` = `[]` ;
+- taxonomie = `../taxonomie.json`, toutes catégories actives, aucune extension ;
+- `ia_extrait_max` = 4000.
 
-Un cas ne vérifie que les clés qu'il liste (les autres sont ignorées), pour rester
-robuste et lisible.
+## Comparaison
 
-## Lancer (Python)
+- **`extraction`** : clés `message_id`, `de`, `a`, `cc`, `cle_fil`,
+  `extrait_debut` (l'extrait doit commencer par cette chaîne). Égalité stricte.
+- **`deterministe`** : `categorie`, `pour_moi` (1/0/null), `expediteur_humain`,
+  `bulk`, `important`, `suspect` (0/1), `urgence`, `signaux` (liste **triée par
+  code point** des expressions qui ont matché, telles qu'écrites dans la
+  taxonomie, qu'elles comptent ou non). Égalité stricte.
+- `raison` et `confiance` ne sont pas comparées.
 
-```bash
-python3 run_conformance.py      # OK/ÉCHEC par cas, code retour ≠ 0 si échec
-```
+Un cas ne vérifie que les clés qu'il liste.
 
-## Régénérer les cas
+## Lancer
 
-Les `.eml`/`.attendu.json` sont **statiques** (committés) pour que les deux harnais
-lisent exactement la même chose. `_generer.py` permet de les reconstruire à
-l'identique si besoin :
+- PHP (GesEnt) : `php artisan test --filter=ConformiteMoteurTest`
+- Python (IAMail) : `python3 -I run_conformance.py`
 
-```bash
-python3 _generer.py
-```
+## Couverture (26 cas)
 
-## Côté GesEnt (PHP)
+Humain en copie · newsletter `List-Unsubscribe` · alerte bancaire en masse
+(importante, `finance`) · domaine composé `bnpparibasfortis` + label marketing
+`info` · « urgent » humain (haute) vs robot (ignoré) · hameçonnage Reply-To ·
+fil `Re: Re: Tr:` · `booking.com` non important · « Suivi de commande » ·
+`setups` ≠ `ups` · apostrophe typographique · corps HTML seul · **sans
+Message-ID** (identifiant synthétique) · **œ** conservé + `[étiquette]` ·
+objet **RFC 2047 base64** · corps **ISO-8859-1** · freemail sans prénom.nom +
+**chevrons** du Message-ID · **mot le plus long** (paiement > facture) ·
+**signal critique dans le corps** · « danger » dans une pub (ignoré) · urgent
+**en copie plafonné** · signal qui **baisse** · **réponse automatique** ·
+**monter l'emporte** sur baisser · **catégorie par domaine** (dpd).
 
-Écrire un `ConformiteTest` PHPUnit qui lit les mêmes `cas/*.eml` + `*.attendu.json`,
-applique le harnais PHP, et compare les deux étages. **Aucun des deux harnais ne
-doit modifier les fichiers de cas** : on modifie la logique dans `moteur/`, et on
-ajoute un cas quand on corrige un bug (test de non-régression partagé).
+## Règles
 
-## Cas couverts (v1.1.0)
-
-humain en copie · newsletter `List-Unsubscribe` · alerte bancaire en masse (reste
-important) · domaine composé `bnpparibasfortis.be` · « urgent » humain vs robot ·
-hameçonnage (Reply-To ≠ From) · fil `Re: Re: Tr:` · `booking.com` pas important ·
-« Suivi de commande » → livraison · « setups » ≠ `ups` · « aujourd'hui » (apostrophe)
-· corps HTML seul.
-
-À compléter (TRANSMISSION §5) : mail sans Message-ID, objet avec œ, RFC 2047,
-corps ISO-8859-1, `prenom.nom` vs `info@`.
+- Aucun harnais ne modifie les cas pour « passer » : on corrige le harnais, ou on
+  corrige `moteur/` (et la version) puis l'attendu, à la main.
+- Tout bug corrigé ajoute un cas (non-régression partagée).

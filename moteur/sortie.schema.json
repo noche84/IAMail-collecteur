@@ -1,47 +1,71 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "moteur-tri-iaemail/sortie.schema.json",
-  "title": "Jugement IA d'un email (contrat de sortie du moteur de tri)",
-  "description": "Toute réponse de l'IA est validée contre ce schéma AVANT d'être écrite en base, côté compagnon (Python : jsonschema) ET côté GesEnt (PHP : opis/json-schema). Échec → ia_source='erreur' et repli sur le classement déterministe. La contrainte 'categorie ∈ taxonomie' n'est pas exprimable ici (la taxonomie varie par entreprise) : chaque harnais la vérifie en plus, après le schéma.",
+  "title": "Jugement IA d'un email — tronc commun (moteur 2.x)",
+  "description": "Validé AVANT toute écriture en base, par chaque harnais. Ordre obligatoire : (1) PRÉ-NORMALISATION commune — retirer les clés absentes de 'properties' (tronc + extensions actives) en les journalisant ; chaîne vide ou blanche → null pour tache et question ; (2) ajouter aux 'properties' et 'required' celles des extensions actives (extensions/*.json) ; (3) valider contre ce schéma ; (4) contrôles hors schéma : categorie ∉ taxonomie active → 'autre' + categorie_proposee conservée + à vérifier ; (les 4 codes d'urgence sont fixes ; seuls libellés, définitions et délais sont réglables). Échec → ia_source='erreur', AUCUNE valeur IA écrite, repli sur le déterministe. Un harnais PEUT redemander une fois la correction au modèle avant de conclure à l'échec.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "categorie", "action_attendue", "tache", "echeance", "pression",
-    "priorite", "resume", "question", "confiance"
+    "categorie",
+    "urgence",
+    "action_attendue",
+    "tache",
+    "echeance",
+    "justification",
+    "resume",
+    "question",
+    "confiance"
   ],
   "properties": {
     "categorie": {
       "type": "string",
-      "pattern": "^[a-z_]{1,40}$"
+      "pattern": "^[a-z_]{1,50}$"
+    },
+    "urgence": {
+      "enum": [
+        "critique",
+        "haute",
+        "normale",
+        "basse"
+      ]
     },
     "action_attendue": {
       "type": "boolean"
     },
     "tache": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "maxLength": 300
     },
     "echeance": {
       "type": "string",
       "pattern": "^(aucune|[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))$"
     },
-    "pression": {
-      "enum": ["maintenant", "cette_semaine", "ce_mois", "aucune"]
-    },
-    "priorite": {
-      "enum": ["haute", "normale", "basse"]
+    "justification": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
     },
     "resume": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 400
+      "maxLength": 300
     },
     "question": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "maxLength": 400
     },
     "confiance": {
-      "enum": ["haute", "moyenne", "faible"]
+      "enum": [
+        "haute",
+        "moyenne",
+        "faible"
+      ]
     }
   }
 }

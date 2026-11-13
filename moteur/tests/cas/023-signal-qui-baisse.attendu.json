@@ -1,0 +1,17 @@
+{
+  "extraction": {
+    "message_id": "cas-023@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": [
+      "rien ne presse"
+    ]
+  }
+}

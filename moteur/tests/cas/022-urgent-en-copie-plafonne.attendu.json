@@ -1,0 +1,20 @@
+{
+  "extraction": {
+    "cc": [
+      "moi@ccl.be"
+    ],
+    "message_id": "cas-022@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 0,
+    "expediteur_humain": 1,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": [
+      "urgent"
+    ]
+  }
+}

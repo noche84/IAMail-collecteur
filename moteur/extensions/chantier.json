@@ -1,0 +1,19 @@
+{
+  "_commentaire": "Extension 'chantier' du moteur de tri : l'IA dit si le message porte sur des travaux précis et relève la référence et l'adresse citées (utilisé par GesEnt pour le rattachement à un chantier, ADR 0009, et la reprise d'adresse en intervention). Activée par configuration du harnais.",
+  "nom": "chantier",
+  "consigne": "- CHANTIER : dans \"chantier\", concerne = true si le message porte sur des travaux précis (en cours, à faire ou réalisés) ; reference = référence de chantier, de devis ou de commande citée, sinon null ; adresse = adresse des travaux citée, sinon null. N'invente ni référence ni adresse.",
+  "format": "\"chantier\": {\"concerne\": true|false, \"reference\": \"…\" ou null, \"adresse\": \"…\" ou null}",
+  "proprietes": {
+    "chantier": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["concerne", "reference", "adresse"],
+      "properties": {
+        "concerne": {"type": "boolean"},
+        "reference": {"type": ["string", "null"], "maxLength": 100},
+        "adresse": {"type": ["string", "null"], "maxLength": 255}
+      }
+    }
+  },
+  "requis": ["chantier"]
+}

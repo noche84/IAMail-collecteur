@@ -1,0 +1,10 @@
+{
+  "_commentaire": "Extension 'action' du moteur de tri : l'IA choisit en plus un CODE d'action parmi une liste fermée (utilisé par GesEnt pour proposer la suite : brouillon de réponse, devis, intervention…). Activée par configuration du harnais ; sans elle, le moteur fonctionne seul.",
+  "nom": "action",
+  "consigne": "- ACTION : choisis dans \"action\" ce qu'il faut faire ensuite, un des codes : repondre (répondre par écrit), rappeler (téléphoner), intervenir (planifier une intervention), deviser (établir un devis), payer (payer ou vérifier un paiement), transmettre (à quelqu'un d'autre), signaler (ne pas donner suite : message suspect), aucune (rien à faire). \"aucune\" si action_attendue est false ; \"signaler\" pour tout message classé hameconnage.",
+  "format": "\"action\": \"repondre|rappeler|intervenir|deviser|payer|transmettre|signaler|aucune\"",
+  "proprietes": {
+    "action": {"enum": ["repondre", "rappeler", "intervenir", "deviser", "payer", "transmettre", "signaler", "aucune"]}
+  },
+  "requis": ["action"]
+}

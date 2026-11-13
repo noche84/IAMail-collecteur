@@ -1,8 +1,16 @@
 {
   "extraction": {
-    "de": "info@tech.be"
+    "de": "info@tech.be",
+    "message_id": "cas-011@exemple.be"
   },
   "deterministe": {
-    "categorie": "autre"
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
   }
 }

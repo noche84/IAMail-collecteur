@@ -1,12 +1,17 @@
 {
   "extraction": {
     "de": "news@mg.boutique.com",
-    "cle_fil": "nos offres du mois"
+    "cle_fil": "nos offres du mois",
+    "message_id": "cas-002@exemple.be"
   },
   "deterministe": {
+    "categorie": "newsletter",
+    "pour_moi": 1,
     "expediteur_humain": 0,
     "bulk": 1,
     "important": 0,
-    "categorie": "newsletter"
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": []
   }
 }

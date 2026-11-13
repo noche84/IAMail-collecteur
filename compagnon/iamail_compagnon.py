@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -467,9 +467,24 @@ def _corps_texte(msg, maxlen=2000):
     texte = "\n".join(t for t in plain if t).strip()
     if not texte:
         texte = _html_vers_texte("\n".join(t for t in html if t))
+    texte = texte.replace("\r\n", "\n").replace("\r", "\n")
     texte = re.sub(r'[ \t]+', ' ', texte)
+    texte = re.sub(r'^ +| +$', '', texte, flags=re.M)   # strip de CHAQUE ligne
     texte = re.sub(r'\n{3,}', '\n\n', texte).strip()
     return texte[:maxlen]
+
+
+def _message_id(msg):
+    """Message-ID 2.0 : chevrons retirés, casse gardée ; si absent, 'synth-' +
+    32 hex de sha256(Date brut trim | adresse From | objet décodé)."""
+    brut = (msg.get("Message-ID") or "").replace("<", "").replace(">", "").strip()
+    if brut:
+        return brut
+    date_brut = (msg.get("Date") or "").strip()
+    de = (_adresses_spec(_dec_entete(msg.get("From"))) or [""])[0]
+    sujet = _dec_entete(msg.get("Subject")) or ""
+    empreinte = hashlib.sha256((date_brut + "|" + de + "|" + sujet).encode("utf-8")).hexdigest()
+    return "synth-" + empreinte[:32]
 
 
 def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
@@ -742,9 +757,13 @@ def _domaine(adresse):
 
 
 def _norm_texte(s):
-    """Minuscule, sans accents, apostrophes → espaces (pour un matching par mots)."""
+    """Normalisation _semantique (moteur 2.0) : minuscule, NFD sans marques
+    combinantes, apostrophes ' ’ ‘ ` ´ → espace, suites d'espaces (sauts de ligne
+    compris) réduites à une espace. Aucune translittération."""
     s = _sans_accents((s or "").lower())
-    return s.replace("'", " ").replace("’", " ")
+    for ap in ("'", "’", "‘", "`", "´"):
+        s = s.replace(ap, " ")
+    return re.sub(r"\s+", " ", s)
 
 
 def _contient_mot(texte, mots):
@@ -788,147 +807,165 @@ def _domaine_contient(dom, tokens):
     return False
 
 
-def _est_important(texte, categorie, de_spec, importants):
-    """Touche à l'argent / la sécurité / une transaction / un contrat ?"""
+# --- Moteur 2.0 : taxonomie chargée en global (niveaux, catégories, signaux) ---
+NIVEAU_RANG = {"critique": 0, "haute": 1, "normale": 2, "basse": 3}
+NIVEAUX = []                 # [{code,libelle,definition,delai_heures}, …]
+CATEGORIES = []              # [{code,libelle,description,urgence_defaut}, …] (actives)
+CAT_PAR_CODE = {}            # code -> dict catégorie
+SIGNAUX = {"critique": [], "haute": [], "basse": []}
+DOMAINES_CATEGORIE = []      # [[code, [tokens]], …]
+SELECTION_IA = {"ignorer_masse_non_importante": True}
+TOPO = {"jours_semaine": 7, "jours_mois": 31,
+        "ordre": ["maintenant", "cette_semaine", "ce_mois", "aucune"]}
+
+
+def _rang_vers_code(r):
+    for code, rang in NIVEAU_RANG.items():
+        if rang == r:
+            return code
+    return "normale"
+
+
+def _humain(de_spec, local, dom):
+    """_algorithme étape 1."""
+    if not de_spec:
+        return False
+    if local in EXPEDITEURS_AUTO or local in LOCAL_GENERIQUE:
+        return False
+    if any(t in local for t in LOCAL_AUTO_INDICES):
+        return False
+    if dom in FREEMAIL:
+        return True
+    return re.search(REGEX_LOCAL_HUMAIN, local) is not None
+
+
+def _marketing(dom, labels):
+    if not dom or dom in FREEMAIL:
+        return False
+    if set(labels) & set(MARKETING_LABELS):
+        return True
+    return any(any(ind in l for ind in MARKETING_INDICES_LABEL) for l in labels)
+
+
+def _est_important(texte_entete, categorie, de_spec, dom, importants):
+    """_algorithme étape 7."""
     if categorie in CATEGORIES_IMPORTANTES:
         return True
-    dom = _domaine(de_spec)
-    if de_spec in importants or dom in importants:
+    if de_spec and (de_spec in importants or dom in importants):
         return True
     if _domaine_contient(dom, DOMAINES_IMPORTANTS):
         return True
-    return _contient_mot(texte, SUJETS_IMPORTANTS)
+    return _mot_matche(texte_entete, SUJETS_IMPORTANTS) is not None
 
 
-def classer(h, mes_adresses, importants=()):
-    """
-    h : dict d'en-têtes décodés (from, to, cc, subject, list_unsubscribe,
-        list_id, precedence, auto_submitted, reply_to, return_path).
-    mes_adresses : liste d'adresses de l'utilisateur (minuscules).
-    importants : adresses/domaines à toujours remonter (config).
-    Renvoie un dict de classement.
-    """
-    de = (h.get("from") or "")
+def classer(h, extrait="", mes_adresses=(), importants=()):
+    """Couche déterministe 2.0 — applique regles._algorithme (étapes 1 à 10).
+    Reçoit l'extrait du corps (les signaux d'urgence s'y cherchent aussi)."""
+    de = h.get("from") or ""
     de_spec = (_adresses_spec(de) or [""])[0]
-    de_local = de_spec.split("@", 1)[0] if de_spec else ""
-    sujet = h.get("subject") or ""
-    texte = _norm_texte(sujet + " " + de)
+    if de_spec:
+        local, _, dom = de_spec.partition("@")
+    else:
+        local, dom = "", ""
+    dom = dom.lower()
+    labels = dom.split(".") if dom else []
+    texte_entete = _norm_texte((h.get("subject") or "") + " " + de)
+    texte_complet = _norm_texte((h.get("subject") or "") + " " + (extrait or ""))
 
-    to = _adresses_spec(h.get("to"))
-    cc = _adresses_spec(h.get("cc"))
-    mes = set(mes_adresses or [])
-
-    # --- Humain vs automatique / en masse ---------------------------------
-    humain = _expediteur_humain(de_spec, de_local)
-    bulk = bool(
-        h.get("list_unsubscribe") or h.get("list_id")
-        or (h.get("precedence", "").lower() in PRECEDENCE_BULK)
-        or de_local in EXPEDITEURS_AUTO
-        or _domaine_marketing(_domaine(de_spec))
-    )
+    # 1. humain
+    humain = _humain(de_spec, local, dom)
+    # 2-3. masse / automatique
+    marketing = _marketing(dom, labels)
+    bulk = bool((h.get("list_unsubscribe") or "").strip() or (h.get("list_id") or "").strip()
+                or (h.get("precedence") or "").strip().lower() in PRECEDENCE_BULK
+                or local in EXPEDITEURS_AUTO or marketing)
     automatique = (not humain) or bulk
-
-    # --- À moi / juste en copie / liste -----------------------------------
-    if mes & set(to):
-        pour_moi = True        # je suis destinataire direct → action probable
-    elif mes & set(cc):
-        pour_moi = False       # seulement en copie → pour info
-    else:
-        pour_moi = None        # ni l'un ni l'autre → liste / diffusion
-
-    # --- Catégorie ---------------------------------------------------------
-    categorie, conf_cat = "autre", "faible"
-    if STRATEGIE_CATEGORIE == "mot_le_plus_long":
-        # Parmi les catégories qui matchent, garder celle dont le mot-clé matché
-        # est le plus long (« suivi de commande » bat « commande ») ; 1re à égalité.
-        meilleure, meilleur_len = None, -1
-        for nom, mots in REGLES_CATEGORIE:
-            mm = _mot_matche(texte, mots)
-            if mm is not None and len(mm) > meilleur_len:
-                meilleure, meilleur_len = nom, len(mm)
-        if meilleure:
-            categorie, conf_cat = meilleure, "moyenne"
-    else:  # "premiere" : ancien comportement
-        for nom, mots in REGLES_CATEGORIE:
-            if _contient_mot(texte, mots):
-                categorie, conf_cat = nom, "moyenne"
-                break
-    if categorie == "autre" and bulk:
-        dom = _domaine(de_spec)
-        categorie = ("reseau_social"
-                     if any(r in dom for r in DOMAINES_RESEAU_SOCIAL)
-                     else "newsletter")
-        conf_cat = "moyenne"
-
-    # --- Soupçon d'hameçonnage (léger, jamais d'action automatique) --------
+    # 4. pour moi
+    mes = {m.lower() for m in (mes_adresses or [])}
+    to = set(_adresses_spec(h.get("to")))
+    cc = set(_adresses_spec(h.get("cc")))
+    pour_moi = 1 if (mes & to) else (0 if (mes & cc) else None)
+    # 6. soupçon
     reply_to = (_adresses_spec(h.get("reply_to")) or [""])[0]
-    suspect = bool(
-        reply_to and _domaine(reply_to) and de_spec
-        and _domaine(reply_to) != _domaine(de_spec)
-        and _contient_mot(texte, MOTS_SUSPECTS)
-    )
-
-    # --- Urgence -----------------------------------------------------------
-    # Le vocabulaire d'urgence ne compte que s'il vient d'un humain : sinon
-    # c'est du marketing qui crie « urgent / rappel / échéance ».
-    a_mot_urgent = _contient_mot(texte, MOTS_URGENTS)
-    if bulk:
+    dom_reply = _domaine(reply_to)
+    suspect = bool(dom_reply and de_spec and dom_reply != dom
+                   and _mot_matche(texte_entete, MOTS_SUSPECTS) is not None)
+    # 5. catégorie
+    categorie, confiance, meilleur = None, "moyenne", -1
+    for code, mots in REGLES_CATEGORIE:
+        if code not in CAT_PAR_CODE:
+            continue
+        for m in mots:
+            if _contient_mot(texte_entete, [m]):
+                long = len(_norm_texte(m).strip())
+                if STRATEGIE_CATEGORIE != "mot_le_plus_long":
+                    if categorie is None:
+                        categorie = code
+                elif long > meilleur:
+                    categorie, meilleur = code, long
+    if categorie is None:
+        for code, tokens in DOMAINES_CATEGORIE:
+            if code in CAT_PAR_CODE and _domaine_contient(dom, tokens):
+                categorie = code
+                break
+    if (categorie is None and bulk and "newsletter" in CAT_PAR_CODE
+            and not _est_important(texte_entete, "autre", de_spec, dom, importants)):
+        categorie = "newsletter"
+    if categorie is None:
+        categorie, confiance = "autre", "faible"
+    # 7. important
+    important = _est_important(texte_entete, categorie, de_spec, dom, importants)
+    # 8. signaux (objet + corps)
+    signaux = []
+    for niveau in ("critique", "haute", "basse"):
+        for expr in SIGNAUX.get(niveau, []):
+            if _contient_mot(texte_complet, [expr]):
+                effet = "baisser" if niveau == "basse" else "monter"
+                compte = (effet == "baisser") or (humain and not bulk)
+                signaux.append({"expression": expr, "niveau": niveau,
+                                "effet": effet, "compte": compte})
+    # 9. urgence (4 niveaux)
+    urgence = (CAT_PAR_CODE.get(categorie) or {}).get("urgence_defaut", "normale")
+    montent = [s for s in signaux if s["effet"] == "monter" and s["compte"]]
+    baissent = [s for s in signaux if s["effet"] == "baisser"]
+    if montent:
+        fort = min(NIVEAU_RANG[s["niveau"]] for s in montent)
+        urgence = _rang_vers_code(min(NIVEAU_RANG[urgence], fort))
+    elif baissent:
+        faible = max(NIVEAU_RANG[s["niveau"]] for s in baissent)
+        urgence = _rang_vers_code(max(NIVEAU_RANG[urgence], faible))
+    if pour_moi != 1 and NIVEAU_RANG[urgence] < NIVEAU_RANG["normale"]:
+        urgence = "normale"
+    if bulk and not important:
         urgence = "basse"
-    elif a_mot_urgent and humain:
-        urgence = "haute"
-    elif a_mot_urgent:
-        urgence = "normale"            # mot d'urgence mais expéditeur automatique
-    else:
+    if important and urgence == "basse":
         urgence = "normale"
 
-    # --- Important « à lire » (argent, sécurité, transaction, contrat) -----
-    important = _est_important(texte, categorie, de_spec, importants)
-
-    # --- Priorité (la synthèse qui sert le topo) --------------------------
-    if pour_moi and not bulk and humain and urgence == "haute":
-        priorite = "haute"
-    elif pour_moi and not bulk and humain:
-        priorite = "normale"
-    elif pour_moi and not bulk:
-        priorite = "normale"           # adressé à toi, émetteur auto (transactionnel)
-    else:
-        priorite = "basse"
-
-    # FILET DE SÉCURITÉ : ce qui est important n'est JAMAIS enterré en "basse".
-    if important and priorite == "basse":
-        priorite = "normale"
-
-    # --- Raison lisible ----------------------------------------------------
-    bouts = []
-    bouts.append("adressé à toi" if pour_moi else
-                 ("juste en copie" if pour_moi is False else "diffusion/liste"))
-    bouts.append("expéditeur humain" if humain else "expéditeur automatique")
-    if important:
-        bouts.append("⭐ à lire (" + categorie + ")" if categorie not in ("autre", "newsletter")
-                     else "⭐ à lire (argent/sécurité)")
-    if bulk:
-        bouts.append("courrier en masse")
-    if urgence == "haute":
-        bouts.append("marqueur d'urgence")
-    elif a_mot_urgent and not humain:
-        bouts.append("urgence marketing (ignorée)")
-    if suspect:
-        bouts.append("⚠ expéditeur de réponse différent")
-    raison = ", ".join(bouts)
-
+    expressions = sorted(s["expression"] for s in signaux)
     return {
-        "categorie": categorie,
-        "urgence": urgence,
-        "pour_moi": None if pour_moi is None else int(pour_moi),
-        "bulk": int(bulk),
-        "automatique": int(automatique),
-        "expediteur_humain": int(humain),
-        "important": int(important),
-        "suspect": int(suspect),
-        "priorite": priorite,
-        "raison": raison,
-        "confiance": conf_cat,
+        "categorie": categorie, "confiance": confiance, "pour_moi": pour_moi,
+        "expediteur_humain": int(humain), "automatique": int(automatique),
+        "bulk": int(bulk), "important": int(important), "suspect": int(suspect),
+        "urgence": urgence, "signaux": expressions, "signaux_detail": signaux,
+        "signal_urgent": int(bool(montent)),
+        "raison": _raison_lisible(categorie, pour_moi, humain, important, bulk,
+                                  suspect, urgence),
     }
+
+
+def _raison_lisible(categorie, pour_moi, humain, important, bulk, suspect, urgence):
+    bouts = ["adressé à toi" if pour_moi == 1 else
+             ("en copie" if pour_moi == 0 else "diffusion")]
+    bouts.append("humain" if humain else "automatique")
+    if important:
+        bouts.append("important")
+    if bulk:
+        bouts.append("masse")
+    if urgence in ("critique", "haute"):
+        bouts.append("urgence " + urgence)
+    if suspect:
+        bouts.append("⚠ Reply-To différent")
+    return ", ".join(bouts)
 
 
 COLONNES_ANALYSE = {
@@ -936,8 +973,10 @@ COLONNES_ANALYSE = {
     "bulk": "INTEGER", "automatique": "INTEGER", "expediteur_humain": "INTEGER",
     "important": "INTEGER", "suspect": "INTEGER", "priorite": "TEXT",
     "raison": "TEXT", "confiance": "TEXT", "analyse_source": "TEXT", "analyse_at": "TEXT",
+    "signaux": "TEXT", "signal_urgent": "INTEGER",   # moteur 2.0
     "ia_categorie": "TEXT", "ia_action": "INTEGER", "ia_tache": "TEXT",
     "ia_echeance": "TEXT", "ia_pression": "TEXT", "ia_priorite": "TEXT",
+    "ia_urgence": "TEXT", "ia_justification": "TEXT", "case_topo": "TEXT",  # moteur 2.0
     "ia_resume": "TEXT", "ia_question": "TEXT", "ia_confiance": "TEXT",
     "ia_source": "TEXT", "ia_at": "TEXT",
     "non_lu": "INTEGER", "etat": "TEXT",
@@ -979,7 +1018,7 @@ def cmd_analyser(args):
     cfg = charger_config(args.config)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
-    charger_regles(cfg)
+    charger_moteur(cfg)
     mes = [a.lower() for a in cfg.get("mes_adresses", [])]
     importants = {a.lower() for a in cfg.get("expediteurs_importants", [])}
     if not mes:
@@ -988,30 +1027,32 @@ def cmd_analyser(args):
 
     where = "" if args.retout else " WHERE categorie IS NULL"
     rows = cx.execute(
-        "SELECT message_id, fichier_eml FROM messages" + where
+        "SELECT message_id, fichier_eml, extrait FROM messages" + where
     ).fetchall()
     total = len(rows)
     print(f"[{NOM}] analyse de {total} message(s)…")
 
     faits, erreurs = 0, 0
     t0 = time.time()
-    for mid, chemin in rows:
+    for mid, chemin, extrait in rows:
         if not chemin or not Path(chemin).exists():
             erreurs += 1
             continue
         try:
             h = _entetes_du_eml(chemin)
-            c = classer(h, mes, importants)
+            c = classer(h, extrait or "", mes, importants)
         except Exception:
             erreurs += 1
             continue
         cx.execute(
             """UPDATE messages SET categorie=?, urgence=?, pour_moi=?, bulk=?,
-               automatique=?, expediteur_humain=?, important=?, suspect=?, priorite=?,
-               raison=?, confiance=?, analyse_source=?, analyse_at=? WHERE message_id=?""",
+               automatique=?, expediteur_humain=?, important=?, suspect=?,
+               signaux=?, signal_urgent=?, raison=?, confiance=?,
+               analyse_source=?, analyse_at=? WHERE message_id=?""",
             (c["categorie"], c["urgence"], c["pour_moi"], c["bulk"],
              c["automatique"], c["expediteur_humain"], c["important"], c["suspect"],
-             c["priorite"], c["raison"], c["confiance"], "regles",
+             json.dumps(c["signaux_detail"], ensure_ascii=False), c["signal_urgent"],
+             c["raison"], c["confiance"], "regles",
              datetime.now(timezone.utc).isoformat(), mid),
         )
         faits += 1
@@ -1030,9 +1071,9 @@ def _resume_analyse(cx):
     print("\n=== Synthèse ===")
     tot = cx.execute("SELECT COUNT(*) FROM messages WHERE categorie IS NOT NULL").fetchone()[0]
     print(f"Classés : {tot}")
-    print("\nPar priorité :")
-    for p, n in compter("SELECT priorite, COUNT(*) FROM messages WHERE categorie IS NOT NULL "
-                        "GROUP BY priorite ORDER BY n DESC".replace("n DESC", "COUNT(*) DESC")):
+    print("\nPar urgence :")
+    for p, n in compter("SELECT urgence, COUNT(*) AS n FROM messages WHERE categorie IS NOT NULL "
+                        "GROUP BY urgence ORDER BY n DESC"):
         print(f"  {p or '—':10} {n}")
     print("\nÀ moi / copie / diffusion :")
     for v, lib in [(1, "adressés à moi"), (0, "juste en copie"), (None, "diffusion/liste")]:
@@ -1149,11 +1190,49 @@ def charger_regles(cfg):
             g[nom_var] = conv(d[cle])
     if "regles_categorie" in d:
         g["REGLES_CATEGORIE"] = [(x[0], list(x[1])) for x in d["regles_categorie"]]
+    if "domaines_categorie" in d:                     # moteur 2.0
+        g["DOMAINES_CATEGORIE"] = [(x[0], list(x[1])) for x in d["domaines_categorie"]]
+    if isinstance(d.get("selection_ia"), dict):
+        g["SELECTION_IA"] = d["selection_ia"]
+    if isinstance(d.get("topo"), dict):
+        g["TOPO"] = {**TOPO, **d["topo"]}
     if isinstance(d.get("parametres"), dict):
         g["PARAMS"] = {**PARAMS, **d["parametres"]}
     # Recompiler la regex de préfixes de fil si la liste a changé.
     g["_PREFIXE_FIL"] = _compiler_prefixe_fil(FIL_PREFIXES)
     return True
+
+
+def charger_taxonomie(cfg):
+    """Charge taxonomie.json (format 2) et peuple les globals du moteur 2.0
+    (niveaux, catégories actives, signaux). Renvoie le dict complet."""
+    p = _moteur_dir(cfg) / "taxonomie.json"
+    taxo = None
+    if p.exists():
+        try:
+            taxo = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            taxo = None
+    if not taxo:
+        taxo = {"niveaux": [{"code": "normale", "libelle": "Cette semaine",
+                             "definition": "", "delai_heures": 72}],
+                "categories": [{"code": "autre", "libelle": "Autre",
+                                "description": "Tout le reste.", "urgence_defaut": "normale"}],
+                "signaux": {"critique": [], "haute": [], "basse": []}}
+    g = globals()
+    g["NIVEAUX"] = taxo.get("niveaux", [])
+    g["CATEGORIES"] = taxo.get("categories", [])
+    g["CAT_PAR_CODE"] = {c["code"]: c for c in g["CATEGORIES"]}
+    sig = taxo.get("signaux", {}) or {}
+    g["SIGNAUX"] = {n: list(sig.get(n, []) or []) for n in ("critique", "haute", "basse")}
+    return taxo
+
+
+def charger_moteur(cfg):
+    """Charge regles + taxonomie, vérifie les empreintes. Renvoie la version moteur."""
+    charger_regles(cfg)
+    charger_taxonomie(cfg)
+    return verifier_moteur(cfg)
 
 
 def charger_prompt(cfg):
@@ -1163,16 +1242,6 @@ def charger_prompt(cfg):
     return ("Tu classes un email. Réponds en JSON strict avec categorie, "
             "action_attendue, tache, echeance, pression, priorite, resume, "
             "question, confiance.")
-
-
-def charger_taxonomie(cfg):
-    p = _moteur_dir(cfg) / "taxonomie.json"
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8")).get("categories", [])
-        except Exception:
-            pass
-    return [{"nom": "autre", "description": "Tout le reste."}]
 
 
 def charger_manifest(cfg):
@@ -1203,15 +1272,16 @@ def verifier_moteur(cfg):
 
 
 _RE_ECHEANCE = re.compile(r'^(aucune|\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]))$')
-_RE_CATEGORIE = re.compile(r'^[a-z_]{1,40}$')
+_RE_CATEGORIE = re.compile(r'^[a-z_]{1,50}$')
 
 
 def valider_sortie(res, taxo_noms):
-    """Valide et normalise le jugement IA contre le contrat (sortie.schema.json).
-    Renvoie (ok, res_normalise, erreur). Échec → le harnais écrit ia_source='erreur'
-    et retombe sur le déterministe (aucune valeur IA non validée en base)."""
-    REQUIS = ("categorie", "action_attendue", "tache", "echeance", "pression",
-              "priorite", "resume", "question", "confiance")
+    """Valide et normalise le jugement IA contre le tronc commun 2.0
+    (sortie.schema.json). Ordre : pré-normalisation (clés inconnues retirées,
+    ''→null pour tache/question) ; validation ; catégorie ∉ taxonomie → 'autre'.
+    Renvoie (ok, res_normalise, erreur). Échec → ia_source='erreur', repli déterministe."""
+    REQUIS = ("categorie", "urgence", "action_attendue", "tache", "echeance",
+              "justification", "resume", "question", "confiance")
     if not isinstance(res, dict):
         return False, None, "réponse non-objet"
     inconnues = [k for k in res if k not in REQUIS]
@@ -1221,16 +1291,16 @@ def valider_sortie(res, taxo_noms):
     for k in ("tache", "question"):               # "" → null
         if isinstance(r[k], str) and not r[k].strip():
             r[k] = None
+    if r["urgence"] not in ("critique", "haute", "normale", "basse"):
+        return False, None, "urgence invalide"
     if not isinstance(r["action_attendue"], bool):
         return False, None, "action_attendue non booléen"
-    if r["pression"] not in ("maintenant", "cette_semaine", "ce_mois", "aucune"):
-        return False, None, "pression invalide"
-    if r["priorite"] not in ("haute", "normale", "basse"):
-        return False, None, "priorite invalide"
     if r["confiance"] not in ("haute", "moyenne", "faible"):
         return False, None, "confiance invalide"
-    if not isinstance(r["resume"], str) or not (1 <= len(r["resume"]) <= 400):
+    if not isinstance(r["resume"], str) or not (1 <= len(r["resume"]) <= 300):
         return False, None, "resume invalide"
+    if not isinstance(r["justification"], str) or not (1 <= len(r["justification"]) <= 500):
+        return False, None, "justification invalide"
     if r["tache"] is not None and (not isinstance(r["tache"], str) or len(r["tache"]) > 300):
         return False, None, "tache invalide"
     if r["question"] is not None and (not isinstance(r["question"], str) or len(r["question"]) > 400):
@@ -1240,8 +1310,36 @@ def valider_sortie(res, taxo_noms):
     if not isinstance(r["echeance"], str) or not _RE_ECHEANCE.match(r["echeance"]):
         return False, None, "echeance format"
     if r["categorie"] not in taxo_noms:          # contrainte hors-schéma
+        r["categorie_proposee"] = r["categorie"]
         r["categorie"] = "autre"
     return True, r, None
+
+
+def deduire_case_topo(urgence, echeance, action_attendue, aujourdhui):
+    """Déduit la case du topo (regles.topo) — jamais demandée à l'IA."""
+    ordre = TOPO.get("ordre", ["maintenant", "cette_semaine", "ce_mois", "aucune"])
+    rang = {c: i for i, c in enumerate(ordre)}
+    case_u = {"critique": "maintenant", "haute": "maintenant",
+              "normale": "cette_semaine"}.get(urgence,
+              "ce_mois" if action_attendue else "aucune")
+    case_e = "aucune"
+    try:
+        d = datetime.strptime((echeance or "").strip(), "%Y-%m-%d").date()
+        auj = datetime.strptime(aujourdhui, "%Y-%m-%d").date()
+        delta = (d - auj).days
+        if delta <= 0:
+            case_e = "maintenant"
+        elif delta <= TOPO.get("jours_semaine", 7):
+            case_e = "cette_semaine"
+        elif delta <= TOPO.get("jours_mois", 31):
+            case_e = "ce_mois"
+    except Exception:
+        case_e = "aucune"
+    case = min(case_u, case_e, key=lambda c: rang.get(c, 99))
+    # Information seule : pas d'action et urgence non critique → aucune.
+    if not action_attendue and urgence != "critique":
+        case = "aucune"
+    return case
 
 
 def _dt_message(valeur):
@@ -1268,8 +1366,9 @@ _PREFIXE_FIL = _compiler_prefixe_fil(FIL_PREFIXES)
 
 
 def _sujet_fil(sujet):
-    """Clé de fil de discussion : objet normalisé (sans Re:/Tr:, sans [tags], sans accents)."""
-    s = _sans_accents((sujet or "").lower())
+    """Clé de fil : objet NORMALISÉ (_semantique : minuscule, sans accents,
+    apostrophes → espace), puis retrait des préfixes Re:/Tr:, des [tags], espaces compactées."""
+    s = _norm_texte(sujet)
     s = _PREFIXE_FIL.sub("", s)
     s = re.sub(r'\[[^\]]*\]', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
@@ -1295,13 +1394,14 @@ def profils_expediteurs(cx):
         return (now - d).days
 
     rows = cx.execute(
-        "SELECT de_adresse, sujet, date_mail, COALESCE(ia_priorite,''), "
-        "COALESCE(ia_pression,''), COALESCE(important,0) FROM messages").fetchall()
-    for de, sujet, dm, iaprio, iapress, imp in rows:
+        "SELECT de_adresse, sujet, date_mail, COALESCE(signal_urgent,0), "
+        "COALESCE(ia_urgence,''), COALESCE(case_topo,''), COALESCE(important,0) "
+        "FROM messages").fetchall()
+    for de, sujet, dm, sig_urg, iaurg, iacase, imp in rows:
         d = _dt_message(dm)
         jd = _jours_depuis(d)
         recent = jd is not None and jd <= PARAMS["fenetre_recent_jours"]
-        urgent_ton = _contient_mot(_norm_texte(sujet or ""), MOTS_URGENTS)
+        urgent_ton = bool(sig_urg)            # signal d'urgence déterministe retenu
         fkey = _sujet_fil(sujet)
 
         spec = (_adresses_spec(de or "") or [""])[0]
@@ -1324,7 +1424,8 @@ def profils_expediteurs(cx):
         if fkey:
             f = fils.setdefault(fkey, {"n": 0, "chauds": 0, "sujet": sujet or fkey})
             f["n"] += 1
-            if iaprio == "haute" or iapress in ("maintenant", "cette_semaine") or imp == 1:
+            if (iaurg in ("critique", "haute")
+                    or iacase in ("maintenant", "cette_semaine") or imp == 1):
                 f["chauds"] += 1
 
     for p in profils.values():
@@ -1337,82 +1438,174 @@ def profils_expediteurs(cx):
 
 
 def _profil_en_clair(profil):
-    """Résume le profil expéditeur en une phrase lisible pour l'IA."""
-    if not profil:
-        return "expéditeur inconnu (premier contact)"
-    bits = [f"{profil['n']} message(s) reçus de cet expéditeur"]
-    if profil.get("recent"):
-        bits.append(f"dont {profil['recent']} sur les 30 derniers jours")
-    bits.append(f"{int(profil['pct_urgent'] * 100)}% au ton « urgent »")
+    """Phrase PROFIL pour l'IA (format entree.txt) ; vide si n = 0."""
+    if not profil or profil.get("n", 0) == 0:
+        return ""
+    pct = int(round(profil["pct_urgent"] * 100))
+    s = (f"{profil['n']} message(s) reçu(s), dont {profil.get('recent', 0)} ces "
+         f"{PARAMS['fenetre_recent_jours']} derniers jours, {pct} % au ton urgent")
     if (profil["n"] >= PARAMS["profil_actif_n_min"]
             and profil.get("recent", 0) >= PARAMS["profil_actif_recent_min"]):
-        bits.append("CORRESPONDANT RÉCURRENT ET ACTIF — ne le traite pas comme un inconnu")
-    elif profil["n"] >= 5:
-        bits.append("correspondant connu de longue date")
-    return ", ".join(bits)
+        s += ", CORRESPONDANT RÉCURRENT ET ACTIF"
+    return s
 
 
 def _memoire_fil(sujet, fils):
-    """Phrase 'mémoire' sur le fil de discussion de ce message, ou '' si rien de notable."""
+    """Phrase MÉMOIRE sur le fil (format entree.txt), ou '' si fil < 2 messages."""
     fkey = _sujet_fil(sujet)
     f = fils.get(fkey) if fkey else None
     if not f or f["n"] < 2:
         return ""
-    autres = f["n"] - 1
-    phrase = (f"fil « {f['sujet'][:60]} » : {autres} autre(s) message(s) sur ce même "
-              f"sujet dans la boîte")
+    s = f"fil « {f['sujet'][:60]} » : {f['n'] - 1} autre(s) message(s) sur ce sujet"
     if f["chauds"]:
-        phrase += f", dont {f['chauds']} déjà jugé(s) important(s) ou urgent(s)"
-    return phrase + ". Sujet suivi — tiens-en compte."
+        s += f", dont {f['chauds']} déjà jugé(s) important(s) ou urgent(s)"
+    return s
 
 
-def _liste_adresses(valeur, maxi=10):
-    """Formatte une liste d'adresses (stockée en JSON) pour l'IA, tronquée."""
+# ── Rendu des gabarits moteur (prompt.txt, entree.txt) ──────────────────────
+def _rendre_gabarit(tpl, vals):
+    """Mustache minimal : {{#k}}…{{/k}} supprimé si vals[k] vide ; puis {{k}} remplacé."""
+    def bloc(m):
+        v = vals.get(m.group(1), "")
+        return m.group(2) if (isinstance(v, str) and v.strip()) else ""
+    tpl = re.sub(r"\{\{#(\w+)\}\}(.*?)\{\{/\1\}\}", bloc, tpl, flags=re.S)
+    return re.sub(r"\{\{(\w+)\}\}", lambda m: str(vals.get(m.group(1), "")), tpl)
+
+
+def _charger_gabarit(cfg, nom):
+    p = _moteur_dir(cfg) / nom
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def charger_extensions(cfg):
+    """Extensions actives (config 'extensions': []), triées par nom."""
+    base = _moteur_dir(cfg) / "extensions"
+    out = []
+    for nom in sorted(cfg.get("extensions", []) or []):
+        p = base / f"{nom}.json"
+        if p.exists():
+            try:
+                out.append(json.loads(p.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+    return out
+
+
+def systeme_ia(cfg, exts):
+    """Prompt système rendu avec les consignes/formats des extensions actives."""
+    tpl = charger_prompt(cfg)
+    if exts:
+        consignes = "\n" + "\n\n".join(e["consigne"] for e in exts) + "\n"
+        fmt = ",\n  " + ",\n  ".join(e["format"] for e in exts)
+    else:
+        consignes, fmt = "", ""
+    return _rendre_gabarit(tpl, {"extensions_consignes": consignes,
+                                 "extensions_format": fmt})
+
+
+def _niveaux_txt():
+    out = []
+    for n in NIVEAUX:
+        d = n.get("delai_heures")
+        delai = f", à traiter sous {d} h" if d else ""
+        out.append(f"- {n['code']} ({n.get('libelle', '')}{delai}) : {n.get('definition', '')}")
+    return "\n".join(out)
+
+
+def _categories_txt():
+    return "\n".join(
+        f"- {c['code']} : {c.get('libelle', '')}. {c.get('description', '')} "
+        f"(urgence habituelle : {c.get('urgence_defaut', 'normale')})" for c in CATEGORIES)
+
+
+def _signaux_txt(signaux_json):
+    try:
+        det = json.loads(signaux_json) if isinstance(signaux_json, str) else (signaux_json or [])
+    except Exception:
+        det = []
+    if not det:
+        return "aucun"
+    bouts = []
+    for s in det:
+        if s["effet"] == "baisser":
+            suff = "baisse"
+        elif s.get("compte"):
+            suff = "monte"
+        else:
+            suff = "monte — ignoré : expéditeur automatique ou masse"
+        bouts.append(f"« {s['expression']} » ({s['niveau']}, {suff})")
+    return ", ".join(bouts)
+
+
+def _adresses_txt(valeur, maxi):
     try:
         arr = json.loads(valeur) if isinstance(valeur, str) else (valeur or [])
     except Exception:
         arr = []
-    arr = [str(a) for a in arr if a]
-    if not arr:
+    specs = []
+    for x in arr:
+        for s in _adresses_spec(x):
+            if s not in specs:
+                specs.append(s)
+    if not specs:
         return ""
-    if len(arr) > maxi:
-        return ", ".join(arr[:maxi]) + f" (+{len(arr) - maxi})"
-    return ", ".join(arr)
+    if len(specs) > maxi:
+        return ", ".join(specs[:maxi]) + f" et {len(specs) - maxi} autre(s)"
+    return ", ".join(specs)
 
 
-def construire_entree_ia(row, profil, fils, taxonomie, aujourdhui):
-    """Texte compact envoyé à l'IA pour UN message (en plus du prompt système)."""
-    cats = ", ".join(f"{c['nom']} ({c['description']})" for c in taxonomie)
-    prof = _profil_en_clair(profil)
-    memo = _memoire_fil(row.get("sujet"), fils)
-    # Le corps est déjà tronqué à ia_extrait_max à l'EXTRACTION : pas de re-plafond ici.
-    extrait = (row.get("extrait") or "").strip() or "(corps vide ou non texte)"
-    a = _liste_adresses(row.get("destinataires"))
-    cc = _liste_adresses(row.get("copies"))
-    pre = []
-    pre.append("destinataire: " + ("à moi" if row["pour_moi"] == 1 else
-               ("en copie" if row["pour_moi"] == 0 else "diffusion")))
-    pre.append("expéditeur " + ("humain" if row["expediteur_humain"] else "automatique"))
+def _pj_txt(valeur):
+    try:
+        arr = json.loads(valeur) if isinstance(valeur, str) else (valeur or [])
+    except Exception:
+        arr = []
+    noms = [str(a.get("nom") if isinstance(a, dict) else a) for a in arr if a]
+    return ", ".join(noms) if noms else "aucune"
+
+
+def _pre_classement_txt(row):
+    parts = ["à moi" if row["pour_moi"] == 1 else
+             ("en copie" if row["pour_moi"] == 0 else "diffusion"),
+             "expéditeur humain" if row["expediteur_humain"] else "expéditeur automatique"]
     if row["bulk"]:
-        pre.append("courrier de masse")
+        parts.append("courrier de masse")
     if row["important"]:
-        pre.append("marqué important")
+        parts.append("marqué important")
     if row.get("suspect"):
-        pre.append("soupçon d'hameçonnage (Reply-To différent)")
-    return (
-        f"DATE DU JOUR: {aujourdhui}\n"
-        f"CATÉGORIES POSSIBLES: {cats}\n"
-        f"PROFIL EXPÉDITEUR: {prof}\n"
-        + (f"MÉMOIRE: {memo}\n" if memo else "")
-        + f"PRÉ-CLASSEMENT AUTOMATIQUE: {', '.join(pre)}\n"
-        f"--- EMAIL ---\n"
-        f"De: {row['de_adresse']}\n"
-        + (f"À: {a}\n" if a else "")
-        + (f"Cc: {cc}\n" if cc else "")
-        + f"Objet: {row['sujet']}\n"
-        f"Date: {row['date_mail']}\n"
-        f"Extrait: {extrait}\n"
-    )
+        parts.append("soupçon d'hameçonnage (Reply-To d'un autre domaine)")
+    return ", ".join(parts)
+
+
+def construire_entree_ia(cfg, row, profil, fils, aujourdhui):
+    """Message utilisateur envoyé à l'IA : rend entree.txt avec les formats du README."""
+    tpl = _charger_gabarit(cfg, "entree.txt")
+    max_ex = int(cfg.get("ia_extrait_max", PARAMS.get("ia_extrait_max", 4000)))
+    extrait = (row.get("extrait") or "").strip()
+    if extrait and len(extrait) >= max_ex:
+        extrait += PARAMS.get("ia_marque_troncature", "")
+    dm = _dt_message(row.get("date_mail"))
+    maxi = PARAMS.get("ia_destinataires_max", 10)
+    vals = {
+        "date_du_jour": aujourdhui,
+        "niveaux": _niveaux_txt(),
+        "categories": _categories_txt(),
+        "expediteur": row.get("de_adresse") or "",
+        "expediteur_connu": "",
+        "profil": _profil_en_clair(profil),
+        "relances": "",
+        "memoire": _memoire_fil(row.get("sujet"), fils),
+        "pre_classement": _pre_classement_txt(row),
+        "signaux": _signaux_txt(row.get("signaux")),
+        "exemples": "",
+        "de": (_adresses_spec(row.get("de_adresse")) or [row.get("de_adresse") or ""])[0],
+        "a": _adresses_txt(row.get("destinataires"), maxi),
+        "cc": _adresses_txt(row.get("copies"), maxi),
+        "objet": row.get("sujet") or "",
+        "date_mail": dm.strftime("%Y-%m-%d %H:%M") if dm else (row.get("date_mail") or ""),
+        "pieces_jointes": _pj_txt(row.get("pieces_jointes")),
+        "extrait": extrait or "(corps vide ou non texte)",
+    }
+    return _rendre_gabarit(tpl, vals)
 
 
 def appeler_mistral(cfg_ia, systeme, utilisateur):
@@ -1450,59 +1643,48 @@ def _extraire_json(texte):
 
 
 def ia_bouchon(row, profil):
-    """Modèle BOUCHONNÉ pour tester tout le pipeline sans clé Mistral.
-    Imite un jugement plausible à partir des signaux déterministes + profil."""
-    # Aligné sur le vrai moteur : matching par MOT ENTIER (pas sous-chaîne).
-    texte = _norm_texte((row["sujet"] or "") + " " + (row["de_adresse"] or ""))
-    a_urgent = _contient_mot(texte, MOTS_URGENTS)
-    crie_au_loup = bool(profil and profil["n"] >= PARAMS["profil_actif_n_min"]
-                        and profil["pct_urgent"] >= 0.5)
-    finance = bool(row["important"] and _contient_mot(texte,
-              ("compte", "virement", "transfert", "transfer", "crypto", "bitcoin",
-               "paiement", "facture", "securite", "fraude", "bloque", "suspendu")))
-    # Notification transactionnelle (déjà faite) : information, pas une action.
+    """Modèle BOUCHONNÉ (contrat 2.0) pour tester le pipeline sans clé Mistral.
+    Part de l'urgence déterministe + signaux ; ne remplace pas le vrai jugement IA."""
+    cat = row.get("categorie") or "autre"
+    urgence = row.get("urgence") or "normale"
+    crie_au_loup = bool(profil and profil.get("n", 0) >= PARAMS["profil_actif_n_min"]
+                        and profil.get("pct_urgent", 0) >= 0.5)
+    texte = _norm_texte((row.get("sujet") or "") + " " + (row.get("de_adresse") or ""))
     notif = _contient_mot(texte,
-                ("successful", "reussi", "recu", "recue", "confirmation", "confirme",
-                 "login", "connexion", "withdrawal", "deposit",
-                 "statement", "releve", "receipt", "welcome", "bienvenue",
-                 "invitation", "horoscope"))
-    cat = row["categorie"] or "autre"
+                ("confirmation", "confirme", "reussi", "recu", "recue", "login",
+                 "withdrawal", "deposit", "statement", "releve", "receipt",
+                 "welcome", "bienvenue", "successful"))
+    # Calibrage : un habitué qui crie urgence est redescendu d'un cran.
+    if crie_au_loup and urgence in ("critique", "haute"):
+        urgence = "normale"
 
-    if notif:
-        prio, pression, action, tache = "basse", "aucune", False, None
-    elif finance:
-        prio, pression, action = "haute", "maintenant", True
-        tache = "Vérifier ce message financier/sécurité"
-    elif row["expediteur_humain"] and a_urgent and not crie_au_loup:
-        prio, pression, action = "haute", "maintenant", True
-        tache = row["sujet"]
-    elif row["expediteur_humain"] and a_urgent and crie_au_loup:
-        prio, pression, action = "normale", "ce_mois", True
-        tache = row["sujet"]
-    elif row["important"]:
-        prio, pression, action = "normale", "cette_semaine", True
-        tache = row["sujet"]
-    elif row["bulk"]:
-        prio, pression, action = "basse", "aucune", False
-        tache = None
+    if cat == "hameconnage" or row.get("suspect"):
+        action, tache, urgence = False, "Ne pas cliquer — vérifier par un autre canal", "haute"
+    elif notif:
+        action, tache, urgence = False, None, "basse"
+    elif row.get("bulk") and not row.get("important"):
+        action, tache, urgence = False, None, "basse"
     else:
-        prio, pression, action = "normale", "cette_semaine", bool(row["pour_moi"] == 1)
-        tache = row["sujet"] if row["pour_moi"] == 1 else None
+        action = bool(row.get("pour_moi") == 1 or row.get("important"))
+        tache = (row.get("sujet") or None) if action else None
 
     question = None
-    if crie_au_loup and a_urgent:
-        question = f"« {(row['sujet'] or '')[:40]} » est marqué urgent, mais cet expéditeur l'écrit souvent — vraiment pour maintenant ?"
+    if crie_au_loup:
+        question = (f"« {(row.get('sujet') or '')[:40]} » vient d'un expéditeur qui "
+                    f"écrit souvent « urgent » — vraiment prioritaire ?")
     return {
-        "categorie": cat, "action_attendue": action, "tache": tache,
-        "echeance": "aucune", "pression": pression, "priorite": prio,
-        "resume": ((row["sujet"] or "").strip() or "(sans objet)")[:400],
-        "question": question, "confiance": "moyenne",
+        "categorie": cat, "urgence": urgence, "action_attendue": action,
+        "tache": tache, "echeance": "aucune",
+        "justification": f"Mock : urgence déterministe {row.get('urgence') or 'normale'}, "
+                         f"catégorie {cat}.",
+        "resume": ((row.get("sujet") or "").strip() or "(sans objet)")[:300],
+        "question": question, "confiance": "faible",
     }
 
 
 def cmd_analyser_ia(args):
     cfg = charger_config(args.config)
-    charger_regles(cfg)
+    moteur_version = charger_moteur(cfg)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
     cfg_ia = dict(cfg.get("ia", {}))
@@ -1514,10 +1696,9 @@ def cmd_analyser_ia(args):
                          "MISTRAL_API_KEY (recommandé, pas en clair dans config.json), "
                          "ou lance avec --mock.")
 
-    systeme = charger_prompt(cfg)
-    taxonomie = charger_taxonomie(cfg)
-    taxo_noms = {c["nom"] for c in taxonomie}
-    moteur_version = verifier_moteur(cfg)
+    exts = charger_extensions(cfg)
+    systeme = systeme_ia(cfg, exts)
+    taxo_noms = set(CAT_PAR_CODE)
     aujourdhui = datetime.now().strftime("%Y-%m-%d")
     profils, fils = profils_expediteurs(cx)
 
@@ -1530,18 +1711,21 @@ def cmd_analyser_ia(args):
         filtre_date = " AND date_mail >= ?"
         params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
     cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
+    # Sélection IA : par défaut, on ignore la masse non importante (regles.selection_ia).
+    filtre_masse = (" AND (bulk=0 OR important=1)"
+                    if SELECTION_IA.get("ignorer_masse_non_importante", True) else "")
     sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
-           "expediteur_humain, important, suspect, categorie, extrait, "
-           "destinataires, copies "
-           "FROM messages WHERE " + cond_source + "categorie IS NOT NULL "
-           "AND (bulk=0 OR important=1)" + filtre_date +
+           "expediteur_humain, important, suspect, categorie, urgence, extrait, "
+           "destinataires, copies, pieces_jointes, signaux "
+           "FROM messages WHERE " + cond_source + "categorie IS NOT NULL"
+           + filtre_masse + filtre_date +
            " ORDER BY date_mail DESC")
     if args.limite:
         sql += f" LIMIT {int(args.limite)}"
     rows = cx.execute(sql, params).fetchall()
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "suspect", "categorie", "extrait",
-            "destinataires", "copies"]
+            "expediteur_humain", "important", "suspect", "categorie", "urgence", "extrait",
+            "destinataires", "copies", "pieces_jointes", "signaux"]
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -1560,7 +1744,7 @@ def cmd_analyser_ia(args):
             if fournisseur == "mock":
                 res = ia_bouchon(row, profil)
             else:
-                entree = construire_entree_ia(row, profil, fils, taxonomie, aujourdhui)
+                entree = construire_entree_ia(cfg, row, profil, fils, aujourdhui)
                 res = _extraire_json(appeler_mistral(cfg_ia, systeme, entree))
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
             erreurs += 1
@@ -1584,15 +1768,16 @@ def cmd_analyser_ia(args):
                        ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
             continue
 
+        case = deduire_case_topo(res["urgence"], res["echeance"],
+                                 bool(res["action_attendue"]), aujourdhui)
         cx.execute(
-            """UPDATE messages SET ia_categorie=?, ia_action=?, ia_tache=?, ia_echeance=?,
-               ia_pression=?, ia_priorite=?, ia_resume=?, ia_question=?, ia_confiance=?,
-               ia_source=?, ia_moteur_version=?, ia_at=? WHERE message_id=?""",
-            (res["categorie"], int(bool(res["action_attendue"])),
-             res["tache"], res["echeance"], res["pression"],
-             res["priorite"], res["resume"], res["question"],
-             res["confiance"], fournisseur, moteur_version,
-             datetime.now(timezone.utc).isoformat(), row["message_id"]),
+            """UPDATE messages SET ia_categorie=?, ia_urgence=?, ia_action=?, ia_tache=?,
+               ia_echeance=?, ia_justification=?, case_topo=?, ia_resume=?, ia_question=?,
+               ia_confiance=?, ia_source=?, ia_moteur_version=?, ia_at=? WHERE message_id=?""",
+            (res["categorie"], res["urgence"], int(bool(res["action_attendue"])),
+             res["tache"], res["echeance"], res["justification"], case,
+             res["resume"], res["question"], res["confiance"], fournisseur,
+             moteur_version, datetime.now(timezone.utc).isoformat(), row["message_id"]),
         )
         faits += 1
         if res.get("question"):
@@ -1667,7 +1852,7 @@ def cmd_brief(args):
     for cle, titre in cases:
         rows = cx.execute(
             """SELECT date_mail, de_adresse, COALESCE(ia_tache, sujet), ia_echeance, ia_question
-               FROM messages WHERE ia_pression=? AND COALESCE(ia_action,1)=1
+               FROM messages WHERE case_topo=? AND COALESCE(ia_action,1)=1
                ORDER BY date_mail DESC LIMIT ?""", (cle, args.nombre)).fetchall()
         if not rows:
             continue
@@ -1751,22 +1936,24 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
             conds.append("(non_lu=1 OR non_lu IS NULL)")
     rows = cx.execute(
         f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
-            ia_echeance, ia_priorite, ia_pression, ia_question, non_lu
+            ia_echeance, ia_urgence, case_topo, ia_question, non_lu
             FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC""",
         params).fetchall()
     cx.close()
     cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance",
-            "priorite", "pression", "question", "non_lu"]
+            "urgence", "case_topo", "question", "non_lu"]
+    _urg_prio = {"critique": "haute", "haute": "haute", "normale": "normale", "basse": "basse"}
     par_case = {c: [] for c, _ in CASES_COCKPIT}
     for r in rows:
         it = dict(zip(cols, r))
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
+        it["priorite"] = _urg_prio.get(it["urgence"], "normale")   # couleur du cockpit
         it["freq"] = p["n"] if p else 0              # combien de mails de cet expéditeur
         it["actif"] = bool(p and p["n"] >= PARAMS["profil_actif_n_min"]
                            and p.get("recent", 0) >= PARAMS["profil_actif_recent_min"])
-        par_case.get(it["pression"] or "aucune", par_case["aucune"]).append(it)
+        par_case.get(it["case_topo"] or "aucune", par_case["aucune"]).append(it)
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
 
 
@@ -2270,7 +2457,7 @@ def construire_script_topo(db, par_case=5):
     def cnt(pression):
         return cx.execute(
             "SELECT COUNT(*) FROM messages WHERE etat IS NULL AND ia_source IS NOT NULL "
-            "AND ia_pression=? AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0",
+            "AND case_topo=? AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0",
             (pression,)).fetchone()[0]
 
     n_now, n_week, n_month = cnt("maintenant"), cnt("cette_semaine"), cnt("ce_mois")
@@ -2306,7 +2493,7 @@ def construire_script_topo(db, par_case=5):
     for pression, intro in sections:
         rows = cx.execute(
             "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail, sujet FROM messages "
-            "WHERE etat IS NULL AND ia_source IS NOT NULL AND ia_pression=? "
+            "WHERE etat IS NULL AND ia_source IS NOT NULL AND case_topo=? "
             "AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0 "
             "ORDER BY date_mail DESC LIMIT 80", (pression,)).fetchall()
         if not rows:
@@ -2404,7 +2591,7 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
 
 def cmd_service(args):
     cfg = charger_config(args.config)
-    v = verifier_moteur(cfg)
+    v = charger_moteur(cfg)
     print(f"[{NOM}] moteur de tri version {v}")
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)

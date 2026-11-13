@@ -1,0 +1,18 @@
+{
+  "extraction": {
+    "de": "news@mail.proequip.be",
+    "message_id": "cas-021@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "newsletter",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 1,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "basse",
+    "signaux": [
+      "danger"
+    ]
+  }
+}

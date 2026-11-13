@@ -1,46 +1,55 @@
 {
-  "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (Python compagnon, PHP GesEnt). Transmis à chaque ingestion ; base de la table moteur_versions côté GesEnt. La version du MOTEUR est indépendante de celle d'un harnais (ex. compagnon v1.13.0). Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (voir README.md).",
+  "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "1.1.0",
-  "date": "2026-11-12",
+  "version": "2.0.0",
+  "date": "2026-11-13",
+  "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
     "prompt.txt",
+    "entree.txt",
     "regles.json",
     "taxonomie.json",
-    "sortie.schema.json"
+    "sortie.schema.json",
+    "extensions/action.json",
+    "extensions/chantier.json"
   ],
   "sha256": {
-    "prompt.txt": "be1cd2c4c89cf81444ca29e69313eefd34fd6f9186dd07d0841e9e68d1880b7a",
-    "regles.json": "f7c9f681651614a7893c38f65e3f868c2579d7e0fe1f1ed14f0c8b5f1aed5805",
-    "taxonomie.json": "341d6b54a8a0814df5779d09267e3f36dda5f7fe760d9ab1f6875cc6dfdb3b18",
-    "sortie.schema.json": "7bc71a15d41b659d54bc14d17456d8428988cc1830b23fb09b4d81bae0c59ea4"
+    "prompt.txt": "714afb7c8ca58055a673e875ffdcae06f10f1998c4bb6c6292943aa132a2a68e",
+    "entree.txt": "95b39066c54853b713ee97b3f69b56381005abfb67f6b2862a33cf6a6bfaacb9",
+    "regles.json": "891a91ea7cee4a49865682c947db6c0170f9a705aa7852ed6635ef6b50211808",
+    "taxonomie.json": "39ecd380f7f6ca36bf8b20d8e02e8a6c067c89cda32e548d3725083fefa9855b",
+    "sortie.schema.json": "468396b03b48215ddcfbb0b453eb89b79eddb5217b3e0b333edca74cb73b20d0",
+    "extensions/action.json": "b9b297370bc5c3742a797bc492f62226f7f1bb682359cff96ef137cbc6b7db99",
+    "extensions/chantier.json": "242d51776b342b82a99d6fb1a7839b7f2353032aaebc49a3b9688ae153a9689b"
+  },
+  "formats": {
+    "regles": 3,
+    "taxonomie": 2
   },
   "contrat_sortie": "sortie.schema.json",
-  "contrat_sortie_resume": {
-    "categorie": "nom ∈ taxonomie (sinon 'autre')",
-    "action_attendue": "bool",
-    "tache": "str | null",
-    "echeance": "AAAA-MM-JJ | aucune",
-    "pression": "maintenant | cette_semaine | ce_mois | aucune",
-    "priorite": "haute | normale | basse",
-    "resume": "str",
-    "question": "str | null (rempli uniquement en cas de doute)",
-    "confiance": "haute | moyenne | faible"
+  "extensions": {
+    "action": "extensions/action.json",
+    "chantier": "extensions/chantier.json"
   },
-  "regles_format": 2,
-  "harnais_requis": {
-    "_commentaire": "Clés de regles.json introduites en 1.1.0 qu'un harnais doit implémenter pour être conforme. Un harnais qui ne les implémente pas reste fonctionnel mais diverge (les tests de conformité le montrent).",
-    "nouvelles_cles": [
-      "regex_local_humain",
-      "marketing_indices_label",
-      "precedence_bulk",
-      "categories_importantes",
-      "mots_suspects",
-      "domaines_reseau_social",
-      "strategie_categorie",
-      "fil_prefixes",
-      "fil_mots_vides",
-      "parametres"
-    ]
-  }
+  "codes_urgence": [
+    "critique",
+    "haute",
+    "normale",
+    "basse"
+  ],
+  "tests": {
+    "dossier": "tests/",
+    "contexte": "tests/contexte.json",
+    "cas": 26
+  },
+  "rupture_depuis_1x": [
+    "urgence sur 4 niveaux (critique|haute|normale|basse) remplace priorite + pression ; la pression (case du topo) est déduite par le harnais (regles.topo)",
+    "taxonomie par défaut = classement construction de GesEnt (+ finance, rendez_vous, prive) ; codes 1.x renommés (voir transmission)",
+    "taxonomie.json porte aussi les niveaux et les signaux d'urgence ; mots_urgents supprimé de regles.json",
+    "signaux d'urgence cherchés dans l'objet ET le corps",
+    "sortie IA : + urgence, + justification ; - priorite, - pression",
+    "prompt.txt devient un gabarit (emplacements d'extensions) ; entree.txt fixe le message envoyé à l'IA",
+    "normalisation : suites d'espaces compactées ; cle_fil : apostrophes → espace",
+    "Message-ID synthétique si absent ; chevrons retirés à l'extraction"
+  ]
 }

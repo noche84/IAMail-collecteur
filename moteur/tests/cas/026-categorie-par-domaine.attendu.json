@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "de": "notification@dpd.be",
+    "message_id": "cas-026@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "commande_livraison",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 1,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

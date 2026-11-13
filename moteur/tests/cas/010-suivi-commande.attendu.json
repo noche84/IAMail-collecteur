@@ -1,0 +1,16 @@
+{
+  "extraction": {
+    "de": "info@boutique.be",
+    "message_id": "cas-010@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "commande_livraison",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
+  }
+}

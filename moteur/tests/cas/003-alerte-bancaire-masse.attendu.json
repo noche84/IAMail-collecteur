@@ -1,9 +1,16 @@
 {
   "extraction": {
-    "de": "no-reply@binance.com"
+    "de": "no-reply@binance.com",
+    "message_id": "cas-003@exemple.be"
   },
   "deterministe": {
+    "categorie": "finance",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
     "bulk": 1,
-    "important": 1
+    "important": 1,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": []
   }
 }
