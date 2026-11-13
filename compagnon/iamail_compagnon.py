@@ -1153,12 +1153,23 @@ def _moteur_dir(cfg):
     d = cfg.get("moteur_dir") or ""
     if d:
         return Path(d)
-    # Par défaut : dossier moteur/ à côté du script, puis ../moteur.
-    ici = Path(__file__).resolve().parent
-    for cand in (ici / "moteur", ici.parent / "moteur"):
-        if cand.exists():
-            return cand
-    return ici / "moteur"
+    # Bases de recherche, dans l'ordre. En exécutable figé (PyInstaller), on
+    # privilégie un moteur/ posé À CÔTÉ de l'exe (surchargeable sans reconstruire),
+    # puis la copie embarquée dans le bundle (_MEIPASS).
+    bases = []
+    if getattr(sys, "frozen", False):
+        bases.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bases.append(Path(meipass))
+    else:
+        ici = Path(__file__).resolve().parent
+        bases += [ici, ici.parent]
+    for base in bases:
+        for cand in (base / "moteur", base):
+            if (cand / "regles.json").exists():
+                return cand
+    return (bases[0] if bases else Path(".")) / "moteur"
 
 
 def charger_regles(cfg):
