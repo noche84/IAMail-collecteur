@@ -1,7 +1,7 @@
 {
   "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "date": "2026-11-13",
   "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
@@ -16,7 +16,7 @@
   "sha256": {
     "prompt.txt": "714afb7c8ca58055a673e875ffdcae06f10f1998c4bb6c6292943aa132a2a68e",
     "entree.txt": "95b39066c54853b713ee97b3f69b56381005abfb67f6b2862a33cf6a6bfaacb9",
-    "regles.json": "891a91ea7cee4a49865682c947db6c0170f9a705aa7852ed6635ef6b50211808",
+    "regles.json": "ee986412f897e7c4891a6102af0ae3c92d32791b882b8c8bc0cb6562d284fe3a",
     "taxonomie.json": "39ecd380f7f6ca36bf8b20d8e02e8a6c067c89cda32e548d3725083fefa9855b",
     "sortie.schema.json": "468396b03b48215ddcfbb0b453eb89b79eddb5217b3e0b333edca74cb73b20d0",
     "extensions/action.json": "b9b297370bc5c3742a797bc492f62226f7f1bb682359cff96ef137cbc6b7db99",
@@ -40,7 +40,7 @@
   "tests": {
     "dossier": "tests/",
     "contexte": "tests/contexte.json",
-    "cas": 26
+    "cas": 29
   },
   "rupture_depuis_1x": [
     "urgence sur 4 niveaux (critique|haute|normale|basse) remplace priorite + pression ; la pression (case du topo) est déduite par le harnais (regles.topo)",
@@ -51,5 +51,13 @@
     "prompt.txt devient un gabarit (emplacements d'extensions) ; entree.txt fixe le message envoyé à l'IA",
     "normalisation : suites d'espaces compactées ; cle_fil : apostrophes → espace",
     "Message-ID synthétique si absent ; chevrons retirés à l'extraction"
-  ]
+  ],
+  "harnais_requis": {
+    "_commentaire": "Changements de comportement que chaque harnais doit implémenter pour être conforme à cette version (prouvés par les cas listés).",
+    "2.1.0": [
+      "Étape 3/8 : un signal qui monte compte si l'expéditeur n'est pas un ROBOT (pas d'adresse, partie locale ∈ expediteurs_auto, ou contenant une entrée de local_auto_indices) et que le courrier n'est pas de masse — plus besoin d'un expéditeur humain (cas 027, 028, 029).",
+      "topo : sans jugement IA, action_attendue = (pour_moi = 1 OU important), échéance 'aucune' (déjà fait par le compagnon, désormais écrit).",
+      "entree.txt : extrait vide → '(corps vide ou non texte)' ; expediteur = 'Nom <adresse>' (adresse seule sans nom)."
+    ]
+  }
 }

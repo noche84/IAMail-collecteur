@@ -19,6 +19,7 @@ for f in CAS.glob("*"):
     f.unlink()
 
 DATE = "Tue, 10 Nov 2026 09:15:00 +0100"
+BOUNDARY_013 = "===============8608803814909061131=="
 
 
 def eml(headers, corps_txt=None, corps_html=None, mid="auto", charset="utf-8"):
@@ -33,6 +34,7 @@ def eml(headers, corps_txt=None, corps_html=None, mid="auto", charset="utf-8"):
         m["Message-ID"] = mid
     if corps_html and not corps_txt:
         m.add_alternative(corps_html, subtype="html")
+        m.set_boundary(BOUNDARY_013)  # fixe : régénérer donne les mêmes octets
     elif charset != "utf-8":
         m.set_content(corps_txt, charset=charset, cte="8bit")
     else:
@@ -283,5 +285,31 @@ ecrire(26, "categorie-par-domaine",
            "Suivez votre envoi."),
        {"de": "notification@dpd.be"},
        det("commande_livraison", 1, 0, 1, 1, 0, "normale"))
+
+# ─── Cas ajoutés en 2.1 : un signal qui monte compte si l'expéditeur n'est pas un ROBOT ───
+
+# 027 — client d'une PME, adresse d'un seul mot sur son domaine : pas « humain », mais pas robot → critique
+ecrire(27, "client-adresse-un-mot",
+       eml({"From": "Jean <jean@plomberie-dupont.be>", "To": "moi@ccl.be",
+            "Subject": "Chaudière"},
+           "Bonjour, plus de chauffage depuis ce matin."),
+       {"de": "jean@plomberie-dupont.be"},
+       det("autre", 1, 0, 0, 0, 0, "critique", ["plus de chauffage"]))
+
+# 028 — client qui écrit depuis info@ (générique, pas de masse) → le signal compte
+ecrire(28, "client-adresse-generique",
+       eml({"From": "Résidence Les Tilleuls <info@residence-tilleuls.be>", "To": "moi@ccl.be",
+            "Subject": "Salle de bain du 2e étage"},
+           "Il y a une fuite d'eau sous la baignoire."),
+       {"de": "info@residence-tilleuls.be"},
+       det("autre", 1, 0, 0, 0, 0, "critique", ["fuite d'eau"]))
+
+# 029 — robot hors masse (partie locale avec « noreply ») : signal listé, ne compte pas
+ecrire(29, "robot-hors-masse",
+       eml({"From": "Supervision <alerte-noreply@supervision-chauffage.be>", "To": "moi@ccl.be",
+            "Subject": "Rapport hebdomadaire"},
+           "Aucun danger détecté cette semaine."),
+       {"de": "alerte-noreply@supervision-chauffage.be"},
+       det("autre", 1, 0, 0, 0, 0, "normale", ["danger"]))
 
 print(f"{len(list(CAS.glob('*.eml')))} cas générés dans {CAS}")

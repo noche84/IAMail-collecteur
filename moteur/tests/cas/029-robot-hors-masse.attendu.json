@@ -1,0 +1,18 @@
+{
+  "extraction": {
+    "de": "alerte-noreply@supervision-chauffage.be",
+    "message_id": "cas-029@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "normale",
+    "signaux": [
+      "danger"
+    ]
+  }
+}

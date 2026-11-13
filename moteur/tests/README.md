@@ -34,7 +34,7 @@ Un cas ne vérifie que les clés qu'il liste.
 - PHP (GesEnt) : `php artisan test --filter=ConformiteMoteurTest`
 - Python (IAMail) : `python3 -I run_conformance.py`
 
-## Couverture (26 cas)
+## Couverture (29 cas)
 
 Humain en copie · newsletter `List-Unsubscribe` · alerte bancaire en masse
 (importante, `finance`) · domaine composé `bnpparibasfortis` + label marketing
@@ -46,7 +46,7 @@ objet **RFC 2047 base64** · corps **ISO-8859-1** · freemail sans prénom.nom +
 **chevrons** du Message-ID · **mot le plus long** (paiement > facture) ·
 **signal critique dans le corps** · « danger » dans une pub (ignoré) · urgent
 **en copie plafonné** · signal qui **baisse** · **réponse automatique** ·
-**monter l'emporte** sur baisser · **catégorie par domaine** (dpd).
+**monter l'emporte** sur baisser · **catégorie par domaine** (dpd) · 2.1 : client à adresse **d'un seul mot** et client en **info@** (le signal compte) · **robot hors masse** (le signal ne compte pas).
 
 ## Règles
 

@@ -59,7 +59,7 @@ PHP du brief GesEnt).
 | `date_du_jour` | `AAAA-MM-JJ` dans le fuseau de l'utilisateur (Europe/Brussels par défaut) |
 | `niveaux` | une ligne par niveau, du plus urgent : `- {code} ({libelle}, à traiter sous {delai_heures} h) : {definition}` — sans `, à traiter…` si délai nul |
 | `categories` | une ligne par catégorie **active**, dans l'ordre : `- {code} : {libelle}. {description} (urgence habituelle : {urgence_defaut})` |
-| `expediteur` | en-tête From décodé (nom + adresse) |
+| `expediteur` | en-tête From décodé, nom affiché et adresse : `Nom <adresse>` (adresse seule s'il n'y a pas de nom) |
 | `expediteur_connu` | facultatif (GesEnt) : contact ou fiche reconnus, ex. `client Dupont SRL` |
 | `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif — vide si n = 0 |
 | `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0 |
@@ -71,7 +71,7 @@ PHP du brief GesEnt).
 | `objet` | objet décodé |
 | `date_mail` | `AAAA-MM-JJ HH:MM` dans le fuseau de l'utilisateur |
 | `pieces_jointes` | noms joints par `, `, ou `aucune` |
-| `extrait` | extrait (voir `_semantique.extrait`), suivi de `ia_marque_troncature` s'il a été tronqué |
+| `extrait` | extrait (voir `_semantique.extrait`), suivi de `ia_marque_troncature` s'il a été tronqué ; `(corps vide ou non texte)` si l'extrait est vide |
 
 ## Contrat de sortie
 
@@ -87,9 +87,12 @@ l'IA : elle se **déduit** de l'urgence, de l'échéance et d'`action_attendue`
 
 1. Toute modification d'un fichier listé dans `manifest.json` → incrémenter
    `version` et recalculer les `sha256`.
-   - **patch** : mots-clés, domaines, signaux, descriptions ;
-   - **mineur** : nouvelle clé facultative, nouvelle extension, consigne de prompt ;
-   - **majeur** : contrat de sortie, algorithme, format d'entrée, sémantique.
+   - **patch** : données seules (mots-clés, domaines, signaux, descriptions) — aucun harnais à modifier ;
+   - **mineur** : changement de comportement ou ajout que chaque harnais doit implémenter
+     (règle de l'algorithme, nouvelle clé, nouvelle extension, consigne de prompt) ; listé dans
+     `manifest.json` → `harnais_requis` et prouvé par de nouveaux cas de test ;
+   - **majeur** : rupture de format ou de contrat (un harnais existant ne peut plus lire
+     les fichiers, ou la sortie IA change de forme).
 2. Un bug corrigé = **un cas ajouté** dans `tests/` (valeurs écrites à la main).
 3. Chaque harnais vérifie les empreintes au démarrage et inscrit la `version`
    du moteur dans chaque jugement.

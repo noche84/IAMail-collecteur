@@ -1,0 +1,18 @@
+{
+  "extraction": {
+    "de": "info@residence-tilleuls.be",
+    "message_id": "cas-028@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "critique",
+    "signaux": [
+      "fuite d'eau"
+    ]
+  }
+}

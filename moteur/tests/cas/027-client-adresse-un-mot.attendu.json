@@ -1,0 +1,18 @@
+{
+  "extraction": {
+    "de": "jean@plomberie-dupont.be",
+    "message_id": "cas-027@exemple.be"
+  },
+  "deterministe": {
+    "categorie": "autre",
+    "pour_moi": 1,
+    "expediteur_humain": 0,
+    "bulk": 0,
+    "important": 0,
+    "suspect": 0,
+    "urgence": "critique",
+    "signaux": [
+      "plus de chauffage"
+    ]
+  }
+}

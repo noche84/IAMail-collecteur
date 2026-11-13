@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.15.1"
+VERSION = "1.16.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -874,6 +874,10 @@ def classer(h, extrait="", mes_adresses=(), importants=()):
 
     # 1. humain
     humain = _humain(de_spec, local, dom)
+    # ROBOT (2.1) : pas d'adresse, OU partie locale auto, OU indice auto en sous-chaîne.
+    # Plus large que « non humain » : info@ / jean@entreprise.be ne sont pas des robots.
+    robot = ((not de_spec) or local in EXPEDITEURS_AUTO
+             or any(t in local for t in LOCAL_AUTO_INDICES))
     # 2-3. masse / automatique
     marketing = _marketing(dom, labels)
     bulk = bool((h.get("list_unsubscribe") or "").strip() or (h.get("list_id") or "").strip()
@@ -921,7 +925,9 @@ def classer(h, extrait="", mes_adresses=(), importants=()):
         for expr in SIGNAUX.get(niveau, []):
             if _contient_mot(texte_complet, [expr]):
                 effet = "baisser" if niveau == "basse" else "monter"
-                compte = (effet == "baisser") or (humain and not bulk)
+                # 2.1 : un signal qui monte compte dès que l'expéditeur n'est pas un
+                # ROBOT et que le courrier n'est pas de masse (avant : « humain »).
+                compte = (effet == "baisser") or (not robot and not bulk)
                 signaux.append({"expression": expr, "niveau": niveau,
                                 "effet": effet, "compte": compte})
     # 9. urgence (4 niveaux)
