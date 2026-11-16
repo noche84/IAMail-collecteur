@@ -1,5 +1,7 @@
 DATE DU JOUR : {{date_du_jour}}
-
+{{#utilisateur}}
+DESTINATAIRE (la personne pour qui tu tries) : {{utilisateur}}
+{{/utilisateur}}
 NIVEAUX D'URGENCE, du plus urgent au moins urgent :
 {{niveaux}}
 

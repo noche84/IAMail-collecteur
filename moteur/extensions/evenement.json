@@ -1,0 +1,47 @@
+{
+  "_commentaire": "Extension 'evenement' du moteur de tri (2.2) : l'IA relève l'événement daté auquel le destinataire est attendu (réunion, rendez-vous, visite, formation). Sert au topo (« vos rendez-vous du jour ») et à l'agenda. Activée par configuration du harnais ; le compagnon IAMail l'active toujours.",
+  "nom": "evenement",
+  "consigne": "- ÉVÉNEMENT : si le message annonce, confirme, déplace ou annule un événement daté auquel le destinataire est attendu ou invité (réunion, rendez-vous, visite, formation, visioconférence), remplis \"evenement\" : date = le jour de l'événement (AAAA-MM-JJ) ; heure = l'heure de début (HH:MM) ou null ; lieu = le lieu ou le type de réunion cité (« visio », « salle 2 », une adresse), sans lien internet, ou null ; annule = true si le message annule l'événement. Si le message ne porte sur aucun événement, ou si le jour ne peut pas être établi avec certitude : \"evenement\": null (et pose la question si c'est important). Une simple date limite n'est pas un événement : elle va dans \"echeance\".",
+  "format": "\"evenement\": {\"date\": \"AAAA-MM-JJ\", \"heure\": \"HH:MM\" ou null, \"lieu\": \"…\" ou null, \"annule\": true|false} ou null",
+  "proprietes": {
+    "evenement": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "heure",
+        "lieu",
+        "annule"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+        },
+        "heure": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "lieu": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "annule": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "requis": [
+    "evenement"
+  ]
+}

@@ -18,7 +18,8 @@ n'en ont pas besoin. On modifie la logique **ici**, jamais dans un seul harnais.
 | `prompt.txt` | Consignes de l'IA (message système). Gabarit : deux emplacements d'extension. |
 | `entree.txt` | Gabarit du message envoyé à l'IA pour UN email. |
 | `sortie.schema.json` | Contrat du tronc commun de la réponse IA + ordre de validation. |
-| `extensions/*.json` | Champs supplémentaires facultatifs (`action`, `chantier`) : consigne, format, schéma. |
+| `extensions/*.json` | Champs supplémentaires facultatifs (`action`, `chantier`, `evenement`, `portee`) : consigne, format, schéma. |
+| `topo.txt` | Consignes de l'IA pour **rédiger le topo** du matin à partir des jugements (2.2). |
 | `tests/` | Jeu de conformité commun : chaque harnais doit le passer intégralement. |
 
 ## Ce qui est commun, ce qui est propre
@@ -56,17 +57,18 @@ PHP du brief GesEnt).
 
 | Variable | Contenu exact |
 |---|---|
-| `date_du_jour` | `AAAA-MM-JJ` dans le fuseau de l'utilisateur (Europe/Brussels par défaut) |
+| `date_du_jour` | `{jour de la semaine} {J} {mois} {AAAA} (AAAA-MM-JJ)` en français, minuscules, `1er` pour le premier du mois, dans le fuseau de l'utilisateur — ex. `lundi 16 novembre 2026 (2026-11-16)` (2.2 : le jour de la semaine évite les erreurs sur « vendredi prochain ») |
+| `utilisateur` | facultatif (2.2) : **pour qui l'on trie**. `{nom}, {fonction}. {profil libre}.` — parties vides omises, espaces compactées, 1500 caractères au plus. IAMail : réglages du cockpit. GesEnt : réglage par utilisateur (boîte personnelle) ou par boîte (boîte partagée). Vide → le bloc DESTINATAIRE disparaît et l'entrée est identique à la 2.1 |
 | `niveaux` | une ligne par niveau, du plus urgent : `- {code} ({libelle}, à traiter sous {delai_heures} h) : {definition}` — sans `, à traiter…` si délai nul |
 | `categories` | une ligne par catégorie **active**, dans l'ordre : `- {code} : {libelle}. {description} (urgence habituelle : {urgence_defaut})` |
 | `expediteur` | en-tête From décodé, nom affiché et adresse : `Nom <adresse>` (adresse seule s'il n'y a pas de nom) |
-| `expediteur_connu` | facultatif (GesEnt) : contact ou fiche reconnus, ex. `client Dupont SRL` |
+| `expediteur_connu` | facultatif : GesEnt — contact ou fiche reconnus, ex. `client Dupont SRL` ; IAMail — `dans la liste des expéditeurs importants du destinataire` si c'est le cas |
 | `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif — vide si n = 0 |
-| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0 |
-| `memoire` | facultatif : `fil « {sujet} » : {n-1} autre(s) message(s) sur ce sujet, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` (sans la fin si chauds = 0) — vide si le fil a moins de 2 messages |
+| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. k = messages **antérieurs**, non traités, hors masse. GesEnt : tous ceux de l'expéditeur. IAMail : seulement ceux du **même fil** (sans le dossier Envoyés, « non traité » y est moins fiable) |
+| `memoire` | facultatif : `fil « {sujet} » : {autres} autre(s) message(s) sur ce sujet, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` (sans la fin si chauds = 0) — vide s'il n'y a aucun autre message. **2.2** : on ne compte que les AUTRES messages du fil (jamais celui que l'on juge), reçus depuis moins de `fil_fenetre_jours` ; « chaud » = `important` OU urgence retenue (IA, sinon règles) `critique`/`haute` |
 | `pre_classement` | éléments joints par `, ` dans cet ordre : `à moi` / `en copie` / `diffusion` ; `expéditeur humain` / `expéditeur automatique` ; `courrier de masse` si bulk ; `marqué important` si important ; `soupçon d'hameçonnage (Reply-To d'un autre domaine)` si suspect |
 | `signaux` | `aucun`, ou pour chaque signal : `« {expression} » ({niveau}, monte)` / `(…, baisse)` / `(…, monte — ignoré : expéditeur automatique ou masse)`, joints par `, ` |
-| `exemples` | facultatif (GesEnt, apprentissage) : messages semblables déjà classés par une personne |
+| `exemples` | facultatif (apprentissage) : messages semblables déjà classés ou corrigés par une personne, `exemples_max` au plus, une entrée par exemple : `- De <{adresse}> — « {objet, 120 car.} » — {extrait, 200 car.}` puis, à la ligne, `  → categorie: {code}, urgence: {code}` (+ `, action_attendue: false (le destinataire a indiqué que ce n'était pas à lui d'agir)` pour une correction « pas pour moi ») |
 | `de`, `a`, `cc` | adresses nues ; `a` et `cc` joints par `, `, au plus `ia_destinataires_max`, puis ` et {n} autre(s)` |
 | `objet` | objet décodé |
 | `date_mail` | `AAAA-MM-JJ HH:MM` dans le fuseau de l'utilisateur |
@@ -77,11 +79,53 @@ PHP du brief GesEnt).
 
 Tronc commun (`sortie.schema.json`) : `categorie`, `urgence`, `action_attendue`,
 `tache`, `echeance`, `justification`, `resume`, `question`, `confiance`.
-Extensions actives : leurs propriétés s'ajoutent (`action`, `chantier`).
+Extensions actives : leurs propriétés s'ajoutent (`action`, `chantier`, `evenement`,
+`portee`). Le compagnon IAMail active toujours `evenement` et `portee`.
 
 La **case du topo** (maintenant / cette semaine / ce mois) n'est pas demandée à
 l'IA : elle se **déduit** de l'urgence, de l'échéance et d'`action_attendue`
 (`regles.json` → `topo`), de la même façon partout.
+
+## Topo rédigé par l'IA (`topo.txt`, 2.2)
+
+Le topo n'est plus un collage de gabarits : une fois les messages jugés, un second
+appel fait **rédiger** le texte parlé. Message système = `topo.txt` (bloc
+`{{#utilisateur}}` comme dans `entree.txt`). Message utilisateur, construit par le
+harnais :
+
+```
+DATE DU JOUR : lundi 16 novembre 2026 (2026-11-16)
+
+ÉVÉNEMENTS D'AUJOURD'HUI ET DE DEMAIN :
+- aujourd'hui à 14:30 — {tâche ou résumé} — lieu : {lieu} — annoncé par {nom}
+(ou « (aucun) »)
+
+MESSAGES À TRAITER, du plus pressant au moins pressant :
+[MAINTENANT]
+1. De : {nom} — reçu {ce matin|hier|…} — urgence {code} — {adressé à la personne|en copie|diffusion}
+   Objet : …
+   Tâche : …            (lignes omises si vides)
+   Résumé : …
+   Pourquoi : …
+   Échéance : AAAA-MM-JJ ({aujourd'hui|demain|…})
+   Question en suspens : …
+[CETTE SEMAINE] …
+[CE MOIS] …
+
+CHIFFRES : …
+```
+
+- Matière : messages **non traités**, hors suspects et hors masse non importante,
+  reçus depuis `topo_fenetre_jours` (ou dont l'échéance n'est pas dépassée de plus
+  de 7 jours) ; `topo_elements_max` au plus. La **case est recalculée à la date du
+  jour** (`regles.topo`), jamais relue telle que stockée le jour du jugement.
+- Ordre : case, puis urgence (critique d'abord), puis « à moi », puis échéance, puis
+  le plus récent.
+- Réponse : `{"court": "...", "complet": "..."}`. Le harnais retire liens, adresses
+  et symboles, vérifie les longueurs, et **retombe sur un gabarit local** (mêmes
+  éléments, même ordre) en cas de panne, de réponse inutilisable ou sans IA.
+- Seuls des résumés déjà produits par le tri partent chez le fournisseur IA ; la
+  synthèse vocale reste locale.
 
 ## Règles de maintenance
 

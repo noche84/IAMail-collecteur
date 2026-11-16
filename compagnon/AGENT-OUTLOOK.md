@@ -61,3 +61,17 @@ de l'Object Model (variantes de version d'Outlook, comptes Exchange vs IMAP). Po
 vérifier en premier : la relève remonte bien les mails (Message-ID, SMTP, To/Cc), la
 catégorie « Traité IAMail » apparaît au clic « Traité », et la suppression/déplacement
 dans Outlook sort le mail du cockpit.
+
+## Corrigé en 1.18 (toujours à valider sur un poste réel)
+
+- COM initialisé dans le fil du service (`CoInitialize`) : sans cela la relève en
+  arrière-plan échouait.
+- Les **invitations et réponses de réunion** (`IPM.Schedule.Meeting.*`) sont relevées.
+- Les en-têtes `Reply-To`, `List-Unsubscribe`, `List-Id`, `Precedence` sont repris
+  des en-têtes de transport : détection du courrier de masse et de l'hameçonnage
+  comme sous Thunderbird.
+- Un mail déjà relevé (EntryID connu) n'est plus relu à chaque cycle.
+
+Reste à faire : une suppression ou un déplacement dans Outlook ne marque pas encore
+« traité » ; `appliquer_retour` interroge encore chaque item à chaque cycle.
+

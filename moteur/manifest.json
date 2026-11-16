@@ -1,8 +1,8 @@
 {
   "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "2.1.0",
-  "date": "2026-11-13",
+  "version": "2.2.0",
+  "date": "2026-11-16",
   "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
     "prompt.txt",
@@ -11,16 +11,22 @@
     "taxonomie.json",
     "sortie.schema.json",
     "extensions/action.json",
-    "extensions/chantier.json"
+    "extensions/chantier.json",
+    "topo.txt",
+    "extensions/evenement.json",
+    "extensions/portee.json"
   ],
   "sha256": {
-    "prompt.txt": "714afb7c8ca58055a673e875ffdcae06f10f1998c4bb6c6292943aa132a2a68e",
-    "entree.txt": "95b39066c54853b713ee97b3f69b56381005abfb67f6b2862a33cf6a6bfaacb9",
-    "regles.json": "ee986412f897e7c4891a6102af0ae3c92d32791b882b8c8bc0cb6562d284fe3a",
+    "prompt.txt": "caea211bc969bf34007b3cd45bda59907ba2922c5efb6f2dc837c37769fee270",
+    "entree.txt": "cce1743a78a6a67a771302c0d363ac7ec91d634546a94b293197ebdd5bc04a7c",
+    "regles.json": "684241dfa624a3b2ebc2a816d76fe6e1aed37f3fad53c3fc21d3ca6528b426dd",
     "taxonomie.json": "39ecd380f7f6ca36bf8b20d8e02e8a6c067c89cda32e548d3725083fefa9855b",
     "sortie.schema.json": "468396b03b48215ddcfbb0b453eb89b79eddb5217b3e0b333edca74cb73b20d0",
     "extensions/action.json": "b9b297370bc5c3742a797bc492f62226f7f1bb682359cff96ef137cbc6b7db99",
-    "extensions/chantier.json": "242d51776b342b82a99d6fb1a7839b7f2353032aaebc49a3b9688ae153a9689b"
+    "extensions/chantier.json": "242d51776b342b82a99d6fb1a7839b7f2353032aaebc49a3b9688ae153a9689b",
+    "topo.txt": "f349571aa11ffb7b9df9836e6876ae0359fee76d4e4782bbc437c646ad515737",
+    "extensions/evenement.json": "7b3f043bac74cbe714bce8d6ecd9d9becd553902eba618eb0127fc32ae354b36",
+    "extensions/portee.json": "b78418fac1b9472d1d5ef9bd45aff7eb66ff298684b42e5b3c4d76524a1349c7"
   },
   "formats": {
     "regles": 3,
@@ -29,7 +35,9 @@
   "contrat_sortie": "sortie.schema.json",
   "extensions": {
     "action": "extensions/action.json",
-    "chantier": "extensions/chantier.json"
+    "chantier": "extensions/chantier.json",
+    "evenement": "extensions/evenement.json",
+    "portee": "extensions/portee.json"
   },
   "codes_urgence": [
     "critique",
@@ -58,6 +66,17 @@
       "Étape 3/8 : un signal qui monte compte si l'expéditeur n'est pas un ROBOT (pas d'adresse, partie locale ∈ expediteurs_auto, ou contenant une entrée de local_auto_indices) et que le courrier n'est pas de masse — plus besoin d'un expéditeur humain (cas 027, 028, 029).",
       "topo : sans jugement IA, action_attendue = (pour_moi = 1 OU important), échéance 'aucune' (déjà fait par le compagnon, désormais écrit).",
       "entree.txt : extrait vide → '(corps vide ou non texte)' ; expediteur = 'Nom <adresse>' (adresse seule sans nom)."
+    ],
+    "2.2.0": [
+      "entree.txt : nouvelle variable facultative 'utilisateur' (pour qui l'on trie : nom, fonction, profil libre ; README) ; vide → entrée identique à la 2.1.",
+      "entree.txt : date_du_jour au format '{jour de la semaine} {J} {mois} {AAAA} (AAAA-MM-JJ)'.",
+      "Mémoire de fil : ne compter que les AUTRES messages du fil, reçus depuis moins de parametres.fil_fenetre_jours ; chaud = important OU urgence retenue critique/haute.",
+      "Case du topo : la recalculer à la date du jour à chaque affichage (une case stockée le jour du jugement se périme).",
+      "Sans jugement IA (panne, réponse rejetée, pas encore jugé) : le message reste visible, rangé par le tri déterministe (regles.topo), jamais dans « pour info » par défaut.",
+      "Extensions 'evenement' (date, heure, lieu, annule) et 'portee' (concerne : moi|autre|collectif) : à activer et à stocker ; le validateur doit gérer 'pattern' dans une propriété imbriquée.",
+      "exemples : format d'une entrée fixé (README) ; une correction humaine devient un exemple.",
+      "topo.txt : rédaction du topo par l'IA à partir des jugements, repli sur un gabarit local (README) — pour les harnais qui produisent un topo."
     ]
-  }
+  },
+  "topo": "topo.txt"
 }

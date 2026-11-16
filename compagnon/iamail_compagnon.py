@@ -40,11 +40,11 @@ import sqlite3
 import sys
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -55,6 +55,11 @@ CONFIG_DEFAUT = {
     "expediteurs_importants": [],
     "moteur_dir": "",
     "ia_jours": 0,
+    "ia_extrait_max": 4000,
+    # Pour QUI l'IA trie (moteur 2.2) : réglable depuis le cockpit (⚙ Réglages).
+    "utilisateur": {"nom": "", "fonction": "", "profil": ""},
+    "topo_ia": True,        # le topo est rédigé par l'IA (repli : gabarit local)
+    "topo_jours": 0,        # 0 = regles.parametres.topo_fenetre_jours
     "tts": {"moteur": "espeak-ng", "voix": "fr", "vitesse": 150, "modele": ""},
     "ia": {
         "fournisseur": "mock",
@@ -77,6 +82,7 @@ def charger_config(chemin):
         )
     cfg = dict(CONFIG_DEFAUT)
     cfg.update(json.loads(p.read_text(encoding="utf-8")))
+    cfg["_chemin_config"] = str(p)
     if not cfg["dossier_staging"] or not cfg["dossier_destination"]:
         raise SystemExit(
             "Renseignez 'dossier_staging' et 'dossier_destination' dans "
@@ -90,7 +96,7 @@ def cmd_init(args):
     if cfg_path.exists() and not args.force:
         print(f"{cfg_path} existe déjà (utilisez --force pour écraser).")
     else:
-        exemple = dict(CONFIG_DEFAUT)
+        exemple = json.loads(json.dumps(CONFIG_DEFAUT))
         exemple["dossier_staging"] = str(Path.home() / "Downloads" / "IAMail")
         exemple["dossier_destination"] = str(Path.home() / "ArchiveIAMail")
         exemple["base_sqlite"] = str(cfg_path.parent / "iamail_index.sqlite3")
@@ -130,13 +136,33 @@ def connexion(chemin_db):
     cx.execute("CREATE INDEX IF NOT EXISTS idx_sujet ON messages(sujet)")
     cx.execute("CREATE INDEX IF NOT EXISTS idx_de ON messages(de_adresse)")
     cx.execute("CREATE INDEX IF NOT EXISTS idx_date ON messages(date_mail)")
+    # Contrat moteur (regles._semantique.message_id) : identifiant SANS chevrons.
+    # Les archives faites avant la 1.18 les avaient gardés : on les retire une fois
+    # (OR IGNORE : si la forme nue existe déjà, la ligne ancienne est laissée telle quelle).
+    cx.execute("UPDATE OR IGNORE messages SET message_id = "
+               "TRIM(REPLACE(REPLACE(message_id, '<', ''), '>', '')) "
+               "WHERE message_id LIKE '<%' OR message_id LIKE '%>'")
+    cx.execute("""
+        CREATE TABLE IF NOT EXISTS corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT, de_adresse TEXT, domaine TEXT, sujet TEXT, mots TEXT,
+            extrait TEXT, categorie TEXT, urgence TEXT, action_attendue INTEGER,
+            concerne TEXT, avant TEXT, at TEXT
+        )
+    """)
+    cx.execute("CREATE INDEX IF NOT EXISTS idx_corr_de ON corrections(de_adresse)")
+    cx.execute("CREATE TABLE IF NOT EXISTS topo_cache "
+               "(cle TEXT PRIMARY KEY, court TEXT, complet TEXT, at TEXT)")
     cx.commit()
     return cx
 
 
 def existe(cx, message_id):
+    """Vrai si le message est déjà indexé (forme nue, ou ancienne forme entre chevrons)."""
+    nu = (message_id or "").strip().strip("<>")
     return cx.execute(
-        "SELECT 1 FROM messages WHERE message_id = ?", (message_id,)
+        "SELECT 1 FROM messages WHERE message_id IN (?,?,?)",
+        (message_id, nu, "<" + nu + ">")
     ).fetchone() is not None
 
 
@@ -223,7 +249,7 @@ def ingest_un(cx, cfg, json_path):
     try:
         with open(dest_eml, "rb") as f:
             msg_obj = email.message_from_binary_file(f)
-        extrait = _corps_texte(msg_obj, int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"])))
+        extrait = _corps_texte(msg_obj, _extrait_max(cfg))
     except Exception:
         extrait = ""
     cx.execute(
@@ -474,6 +500,11 @@ def _corps_texte(msg, maxlen=2000):
     return texte[:maxlen]
 
 
+def _extrait_max(cfg):
+    """Longueur de l'extrait stocké : la même partout (relève, rattrapage, entrée IA)."""
+    return int(cfg.get("ia_extrait_max") or PARAMS.get("ia_extrait_max", 4000))
+
+
 def _message_id(msg):
     """Message-ID 2.0 : chevrons retirés, casse gardée ; si absent, 'synth-' +
     32 hex de sha256(Date brut trim | adresse From | objet décodé)."""
@@ -509,13 +540,18 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
                 bilan["erreur"] += 1
                 continue
 
-            mid = (_dec_entete(msg.get("Message-ID")) or "").strip()
-            if not mid:
-                brut0 = mbox.get_bytes(cle)
-                mid = "sansid:" + hashlib.sha1(brut0[:2000]).hexdigest()[:16]
+            # Identifiant du contrat moteur (le même que GesEnt et l'agent Outlook) :
+            # chevrons retirés ; 'synth-…' si l'en-tête manque.
+            mid = _message_id(msg)
             if existe(cx, mid):
                 bilan["doublon"] += 1
                 continue
+            if mid.startswith("synth-"):
+                # Archives d'avant la 1.18 : ces messages portaient une clé 'sansid:'.
+                brut0 = mbox.get_bytes(cle)
+                if existe(cx, "sansid:" + hashlib.sha1(brut0[:2000]).hexdigest()[:16]):
+                    bilan["doublon"] += 1
+                    continue
 
             dt = _date_iso(msg)
             dt_part = dt or datetime.now(timezone.utc)
@@ -533,7 +569,7 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
             dest_json = dest_eml.with_suffix(".json")
 
             meta = {
-                "message_id": mid if not mid.startswith("sansid:") else None,
+                "message_id": mid if not mid.startswith("synth-") else None,
                 "de_adresse": de,
                 "de_nom": de,
                 "destinataires": _adresses(msg.get("To")),
@@ -558,7 +594,7 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
                 bilan["erreur"] += 1
                 continue
 
-            extrait = _corps_texte(msg, int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"])))
+            extrait = _corps_texte(msg, _extrait_max(cfg))
             cx.execute(
                 """INSERT OR IGNORE INTO messages
                    (message_id, de_adresse, destinataires, copies, date_mail, sujet,
@@ -749,8 +785,14 @@ PARAMS = {
     "regroupement_mot_longueur_min": 4,
     "regroupement_mots_partages_min": 2,
     "regroupement_jaccard_min": 0.34,
-    "ia_extrait_max_defaut": 2000,
+    "ia_extrait_max": 4000,
     "topo_intervenants_max": 5,
+    "relance_fenetre_jours": 14,
+    "fil_fenetre_jours": 90,
+    "exemples_max": 3,
+    "topo_fenetre_jours": 14,
+    "topo_elements_max": 40,
+    "ia_destinataires_max": 10,
 }
 
 
@@ -1003,6 +1045,7 @@ COLONNES_ANALYSE = {
     "ia_moteur_version": "TEXT",   # version du moteur qui a produit le jugement
     "source_ref": "TEXT",   # réf. côté client (EntryID Outlook) pour le retour-mail
     "source_type": "TEXT",  # collecteur d'origine : thunderbird | outlook
+    "corrige_at": "TEXT",   # jugement corrigé à la main dans le cockpit : jamais rejugé d'office
 }
 
 
@@ -1330,6 +1373,8 @@ def _valider_schema(v, schema):
             return False, "trop long"
         if "minLength" in schema and len(v) < schema["minLength"]:
             return False, "trop court"
+        if "pattern" in schema and not re.search(schema["pattern"], v):
+            return False, "format"
     if isinstance(v, dict):
         props = schema.get("properties", {})
         if schema.get("additionalProperties") is False:
@@ -1458,31 +1503,54 @@ def _sujet_fil(sujet):
     return s
 
 
+def _jours_depuis(d, now=None):
+    if not d:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return ((now or datetime.now(timezone.utc)) - d).days
+
+
+def _local(d):
+    """Date/heure dans le fuseau du poste (les mails sont stockés avec le fuseau de
+    l'expéditeur ou en UTC : sans cela, « à 10 heures » est faux d'une ou deux heures)."""
+    try:
+        return d.astimezone() if (d and d.tzinfo) else d
+    except Exception:
+        return d
+
+
+def _est_chaud(important, urgence):
+    """Un message « chaud » pour la mémoire de fil : important, ou urgence retenue
+    (IA, sinon règles) critique/haute. Même définition que GesEnt."""
+    return important == 1 or urgence in ("critique", "haute")
+
+
 def profils_expediteurs(cx):
-    """Mémoire de l'historique. Renvoie (profils, fils).
+    """Mémoire de l'historique. Renvoie (profils, fils, attente).
 
     profils[adresse] = volume, part de mails 'urgent', récence (30 j), premier/
     dernier contact, fil principal — pour ne pas traiter un habitué comme un inconnu.
-    fils[clé] = combien de messages partagent ce sujet et combien sont déjà 'chauds'
-    (importants ou urgents) — pour reconnaître un sujet suivi de près.
+    fils[clé] = messages du même sujet reçus depuis moins de fil_fenetre_jours, et
+    combien sont 'chauds' — pour reconnaître un sujet suivi de près (un objet banal
+    comme « Facture » ne devient plus un fil de 300 messages étalés sur des années).
+    attente[(adresse, clé)] = dates des messages NON traités, hors masse, de cet
+    expéditeur sur ce sujet (fenêtre relance_fenetre_jours) — pour repérer une relance.
     """
-    profils, fils = {}, {}
+    profils, fils, attente = {}, {}, {}
     now = datetime.now(timezone.utc)
-
-    def _jours_depuis(d):
-        if not d:
-            return None
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        return (now - d).days
+    f_fil = PARAMS.get("fil_fenetre_jours", 90)
+    f_rel = PARAMS.get("relance_fenetre_jours", 14)
 
     rows = cx.execute(
         "SELECT de_adresse, sujet, date_mail, COALESCE(signal_urgent,0), "
-        "COALESCE(ia_urgence,''), COALESCE(case_topo,''), COALESCE(important,0) "
-        "FROM messages").fetchall()
-    for de, sujet, dm, sig_urg, iaurg, iacase, imp in rows:
+        "COALESCE(NULLIF(ia_urgence,''), urgence, ''), COALESCE(important,0), "
+        "COALESCE(bulk,0), etat FROM messages").fetchall()
+    for de, sujet, dm, sig_urg, urg, imp, bulk, etat in rows:
         d = _dt_message(dm)
-        jd = _jours_depuis(d)
+        if d is not None and d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        jd = _jours_depuis(d, now)
         recent = jd is not None and jd <= PARAMS["fenetre_recent_jours"]
         urgent_ton = bool(sig_urg)            # signal d'urgence déterministe retenu
         fkey = _sujet_fil(sujet)
@@ -1503,21 +1571,22 @@ def profils_expediteurs(cx):
                     p["dernier"] = d
             if fkey:
                 p["_fils"][fkey] = p["_fils"].get(fkey, 0) + 1
+            if (fkey and d and etat is None and not bulk
+                    and jd is not None and jd <= f_rel):
+                attente.setdefault((spec, fkey), []).append(d)
 
-        if fkey:
+        if fkey and jd is not None and jd <= f_fil:
             f = fils.setdefault(fkey, {"n": 0, "chauds": 0, "sujet": sujet or fkey})
             f["n"] += 1
-            if (iaurg in ("critique", "haute")
-                    or iacase in ("maintenant", "cette_semaine") or imp == 1):
+            if _est_chaud(imp, urg):
                 f["chauds"] += 1
 
     for p in profils.values():
         p["pct_urgent"] = round(p["urgents"] / p["n"], 2) if p["n"] else 0.0
         p["fil_principal"] = (max(p["_fils"].items(), key=lambda kv: kv[1])
                               if p["_fils"] else None)
-        jd = _jours_depuis(p["premier"])
-        p["anciennete_j"] = jd
-    return profils, fils
+        p["anciennete_j"] = _jours_depuis(p["premier"], now)
+    return profils, fils, attente
 
 
 def _profil_en_clair(profil):
@@ -1533,16 +1602,129 @@ def _profil_en_clair(profil):
     return s
 
 
-def _memoire_fil(sujet, fils):
-    """Phrase MÉMOIRE sur le fil (format entree.txt), ou '' si fil < 2 messages."""
-    fkey = _sujet_fil(sujet)
+def _memoire_fil(row, fils):
+    """Phrase MÉMOIRE sur le fil (format entree.txt). Ne compte que les AUTRES
+    messages du fil : le message jugé est retiré du total et des « chauds »
+    (sinon un mail « important » se déclarait lui-même sujet brûlant)."""
+    fkey = _sujet_fil(row.get("sujet"))
     f = fils.get(fkey) if fkey else None
-    if not f or f["n"] < 2:
+    if not f:
         return ""
-    s = f"fil « {f['sujet'][:60]} » : {f['n'] - 1} autre(s) message(s) sur ce sujet"
-    if f["chauds"]:
-        s += f", dont {f['chauds']} déjà jugé(s) important(s) ou urgent(s)"
+    jd = _jours_depuis(_dt_message(row.get("date_mail")))
+    moi = jd is not None and jd <= PARAMS.get("fil_fenetre_jours", 90)
+    autres = f["n"] - (1 if moi else 0)
+    if autres < 1:
+        return ""
+    urg = row.get("ia_urgence") or row.get("urgence") or ""
+    chauds = f["chauds"] - (1 if (moi and _est_chaud(row.get("important"), urg)) else 0)
+    s = f"fil « {f['sujet'][:60]} » : {autres} autre(s) message(s) sur ce sujet"
+    if chauds > 0:
+        s += f", dont {chauds} déjà jugé(s) important(s) ou urgent(s)"
     return s
+
+
+def _relances_txt(row, attente):
+    """Phrase RELANCE (format entree.txt) : messages PRÉCÉDENTS du même expéditeur
+    sur le même sujet, restés non traités. Volontairement prudent en autonome : sans
+    le dossier Envoyés, « non traité » veut dire « pas marqué Traité au cockpit »."""
+    spec = (_adresses_spec(row.get("de_adresse") or "") or [""])[0]
+    fkey = _sujet_fil(row.get("sujet"))
+    d = _dt_message(row.get("date_mail"))
+    if not (spec and fkey and d and attente):
+        return ""
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    k = sum(1 for x in attente.get((spec, fkey), []) if x < d)
+    if k <= 0:
+        return ""
+    return (f"l'expéditeur a déjà écrit {k} fois ces {PARAMS.get('relance_fenetre_jours', 14)} "
+            f"derniers jours sans que ses messages soient traités")
+
+
+# ── Pour QUI l'on trie (moteur 2.2) ─────────────────────────────────────────
+_JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_MOIS_ENTREE = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+                "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _date_du_jour_txt(iso):
+    """'lundi 16 novembre 2026 (2026-11-16)' : le jour de la semaine évite à l'IA
+    de se tromper sur « vendredi prochain »."""
+    try:
+        d = datetime.strptime(iso, "%Y-%m-%d").date()
+    except Exception:
+        return iso
+    jour = "1er" if d.day == 1 else str(d.day)
+    return f"{_JOURS[d.weekday()]} {jour} {_MOIS_ENTREE[d.month - 1]} {d.year} ({iso})"
+
+
+def _utilisateur_txt(cfg):
+    """Bloc DESTINATAIRE de l'entrée IA : nom, fonction, puis description libre
+    (responsabilités, priorités, ce qui ne le concerne pas). Vide si non renseigné."""
+    u = cfg.get("utilisateur") or {}
+    if isinstance(u, str):
+        u = {"profil": u}
+    nom, fonction, profil = (str(u.get(k) or "").strip() for k in ("nom", "fonction", "profil"))
+    tete = ", ".join(x for x in (nom, fonction) if x)
+    txt = ". ".join(x.rstrip(". ") for x in (tete, profil) if x)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return (txt[:1500].rstrip(". ") + ".") if txt else ""
+
+
+def _expediteur_connu_txt(cfg, de):
+    """En autonome, la seule chose « connue » est la liste expediteurs_importants."""
+    spec = (_adresses_spec(de or "") or [""])[0]
+    imp = {a.lower() for a in (cfg.get("expediteurs_importants") or [])}
+    if spec and (spec in imp or _domaine(spec) in imp):
+        return "dans la liste des expéditeurs importants du destinataire"
+    return ""
+
+
+# ── Jurisprudence locale : les corrections faites dans le cockpit ───────────
+def _mots_cles(sujet):
+    return " ".join(sorted(_mots_sujet(sujet)))
+
+
+def exemples_pertinents(cx, row):
+    """Corrections passées qui ressemblent à ce message (même expéditeur, même
+    domaine d'entreprise, objet voisin). Même barème que GesEnt (ExemplesCourrier)."""
+    spec = (_adresses_spec(row.get("de_adresse") or "") or [""])[0]
+    dom = _domaine(spec)
+    dom = dom if (dom and dom not in FREEMAIL) else ""
+    mots = _mots_sujet(row.get("sujet"))
+    try:
+        lignes = cx.execute(
+            "SELECT message_id, de_adresse, domaine, sujet, mots, extrait, categorie, "
+            "urgence, action_attendue, concerne FROM corrections ORDER BY id DESC LIMIT 300"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    vus, notes = set(), []
+    for mid, de, d2, sujet, m2, extrait, cat, urg, action, concerne in lignes:
+        if mid in vus or mid == row.get("message_id"):
+            continue                      # la correction la plus récente d'un mail l'emporte
+        vus.add(mid)
+        score = 60 if (spec and de == spec) else (30 if (dom and d2 == dom) else 0)
+        siens = set((m2 or "").split())
+        if mots and siens:
+            score += int(round(40 * len(mots & siens) / len(mots | siens)))
+        if score >= 30:
+            notes.append((score, {"de": de, "sujet": sujet, "extrait": extrait, "categorie": cat,
+                                  "urgence": urg, "action": action, "concerne": concerne}))
+    notes.sort(key=lambda x: -x[0])
+    return [e for _, e in notes[:int(PARAMS.get("exemples_max", 3))]]
+
+
+def _exemples_txt(exs):
+    """Bloc 'exemples' de entree.txt, au format de GesEnt (ExemplesCourrier::pourIa)."""
+    out = []
+    for e in exs:
+        suite = f"categorie: {e['categorie'] or 'autre'}, urgence: {e['urgence'] or 'normale'}"
+        if e.get("concerne") == "autre" or e.get("action") == 0:
+            suite += ", action_attendue: false (le destinataire a indiqué que ce n'était pas à lui d'agir)"
+        out.append(f"- De <{e['de'] or ''}> — « {(e['sujet'] or '')[:120]} » — "
+                   f"{(e['extrait'] or '')[:200]}\n  → {suite}")
+    return "\n".join(out)
 
 
 # ── Rendu des gabarits moteur (prompt.txt, entree.txt) ──────────────────────
@@ -1560,11 +1742,15 @@ def _charger_gabarit(cfg, nom):
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+# Extensions dont le compagnon a besoin (topo, cockpit) : toujours actives.
+EXTENSIONS_COMPAGNON = ("evenement", "portee")
+
+
 def charger_extensions(cfg):
     """Extensions actives (config 'extensions': []), triées par nom."""
     base = _moteur_dir(cfg) / "extensions"
     out = []
-    for nom in sorted(cfg.get("extensions", []) or []):
+    for nom in sorted(set(cfg.get("extensions", []) or []) | set(EXTENSIONS_COMPAGNON)):
         p = base / f"{nom}.json"
         if p.exists():
             try:
@@ -1659,27 +1845,28 @@ def _pre_classement_txt(row):
     return ", ".join(parts)
 
 
-def construire_entree_ia(cfg, row, profil, fils, aujourdhui):
+def construire_entree_ia(cfg, row, profil, fils, aujourdhui, attente=None, exemples=""):
     """Message utilisateur envoyé à l'IA : rend entree.txt avec les formats du README."""
     tpl = _charger_gabarit(cfg, "entree.txt")
-    max_ex = int(cfg.get("ia_extrait_max", PARAMS.get("ia_extrait_max", 4000)))
+    max_ex = _extrait_max(cfg)
     extrait = (row.get("extrait") or "").strip()
     if extrait and len(extrait) >= max_ex:
         extrait += PARAMS.get("ia_marque_troncature", "")
-    dm = _dt_message(row.get("date_mail"))
+    dm = _local(_dt_message(row.get("date_mail")))
     maxi = PARAMS.get("ia_destinataires_max", 10)
     vals = {
-        "date_du_jour": aujourdhui,
+        "date_du_jour": _date_du_jour_txt(aujourdhui),
+        "utilisateur": _utilisateur_txt(cfg),
         "niveaux": _niveaux_txt(),
         "categories": _categories_txt(),
         "expediteur": row.get("de_adresse") or "",
-        "expediteur_connu": "",
+        "expediteur_connu": _expediteur_connu_txt(cfg, row.get("de_adresse")),
         "profil": _profil_en_clair(profil),
-        "relances": "",
-        "memoire": _memoire_fil(row.get("sujet"), fils),
+        "relances": _relances_txt(row, attente),
+        "memoire": _memoire_fil(row, fils),
         "pre_classement": _pre_classement_txt(row),
         "signaux": _signaux_txt(row.get("signaux")),
-        "exemples": "",
+        "exemples": exemples or "",
         "de": (_adresses_spec(row.get("de_adresse")) or [row.get("de_adresse") or ""])[0],
         "a": _adresses_txt(row.get("destinataires"), maxi),
         "cc": _adresses_txt(row.get("copies"), maxi),
@@ -1691,11 +1878,11 @@ def construire_entree_ia(cfg, row, profil, fils, aujourdhui):
     return _rendre_gabarit(tpl, vals)
 
 
-def appeler_mistral(cfg_ia, systeme, utilisateur):
+def appeler_mistral(cfg_ia, systeme, utilisateur, modele=None, temperature=0):
     """Appel chat completions compatible OpenAI (Mistral). Renvoie le texte brut."""
     corps = json.dumps({
-        "model": cfg_ia.get("modele", "mistral-small-latest"),
-        "temperature": 0,
+        "model": modele or cfg_ia.get("modele", "mistral-small-latest"),
+        "temperature": temperature,
         "response_format": {"type": "json_object"},   # exige un objet JSON
         "messages": [
             {"role": "system", "content": systeme},
@@ -1762,7 +1949,32 @@ def ia_bouchon(row, profil):
                          f"catégorie {cat}.",
         "resume": ((row.get("sujet") or "").strip() or "(sans objet)")[:300],
         "question": question, "confiance": "faible",
+        "evenement": None, "concerne": "moi" if action else "collectif",
     }
+
+
+def _juge_par_ia(source):
+    """Vrai si le message porte un jugement utilisable (IA, bouchon ou correction humaine)."""
+    return source not in (None, "", "erreur")
+
+
+def case_du_jour(r, aujourdhui):
+    """Case du topo recalculée AUJOURD'HUI (regles.topo). La case stockée le jour du
+    jugement se périme : une échéance « dans 20 jours » doit remonter d'elle-même.
+    Sans jugement IA (pas encore jugé, panne, réponse rejetée) : repli sur le tri
+    déterministe — action_attendue = (à moi OU important), pas d'échéance."""
+    if _juge_par_ia(r.get("ia_source")) and r.get("ia_urgence"):
+        return deduire_case_topo(r["ia_urgence"], r.get("ia_echeance"),
+                                 bool(r.get("ia_action")), aujourdhui)
+    return deduire_case_topo(r.get("urgence") or "normale", None,
+                             r.get("pour_moi") == 1 or r.get("important") == 1, aujourdhui)
+
+
+def _config_ia(cfg):
+    cfg_ia = dict(cfg.get("ia", {}))
+    if not cfg_ia.get("cle"):
+        cfg_ia["cle"] = os.environ.get("MISTRAL_API_KEY", "")
+    return cfg_ia
 
 
 def cmd_analyser_ia(args):
@@ -1770,9 +1982,7 @@ def cmd_analyser_ia(args):
     moteur_version = charger_moteur(cfg)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
-    cfg_ia = dict(cfg.get("ia", {}))
-    if not cfg_ia.get("cle"):
-        cfg_ia["cle"] = os.environ.get("MISTRAL_API_KEY", "")
+    cfg_ia = _config_ia(cfg)
     fournisseur = (args.mock and "mock") or cfg_ia.get("fournisseur", "mock")
     if fournisseur != "mock" and not cfg_ia.get("cle") and not getattr(args, "compter", False):
         raise SystemExit("Clé IA absente : mets-la dans la variable d'environnement "
@@ -1780,10 +1990,15 @@ def cmd_analyser_ia(args):
                          "ou lance avec --mock.")
 
     exts = charger_extensions(cfg)
+    if fournisseur == "mock":       # le bouchon ne connaît que les extensions du compagnon
+        exts = [e for e in exts if e.get("nom") in EXTENSIONS_COMPAGNON]
     systeme = systeme_ia(cfg, exts)
     taxo_noms = set(CAT_PAR_CODE)
     aujourdhui = datetime.now().strftime("%Y-%m-%d")
-    profils, fils = profils_expediteurs(cx)
+    profils, fils, attente = profils_expediteurs(cx)
+    if fournisseur != "mock" and not _utilisateur_txt(cfg) and not getattr(args, "compter", False):
+        print(f"[{NOM}] ⚠ profil utilisateur vide : l'IA ne sait pas pour qui elle trie "
+              f"(cockpit → ⚙ Réglages, ou clé \"utilisateur\" de la config).", file=sys.stderr)
 
     # Sélection : ce qui mérite l'IA et n'a pas encore été jugé.
     jours = args.jours if args.jours is not None else cfg.get("ia_jours", 0)
@@ -1797,18 +2012,16 @@ def cmd_analyser_ia(args):
     # Sélection IA : par défaut, on ignore la masse non importante (regles.selection_ia).
     filtre_masse = (" AND (bulk=0 OR important=1)"
                     if SELECTION_IA.get("ignorer_masse_non_importante", True) else "")
-    sql = ("SELECT message_id, de_adresse, sujet, date_mail, pour_moi, bulk, "
-           "expediteur_humain, important, suspect, categorie, urgence, extrait, "
-           "destinataires, copies, pieces_jointes, signaux "
-           "FROM messages WHERE " + cond_source + "categorie IS NOT NULL"
-           + filtre_masse + filtre_date +
-           " ORDER BY date_mail DESC")
+    cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
+            "expediteur_humain", "important", "suspect", "categorie", "urgence", "extrait",
+            "destinataires", "copies", "pieces_jointes", "signaux", "ia_urgence"]
+    # Un jugement corrigé à la main (cockpit) n'est jamais rejugé d'office.
+    sql = ("SELECT " + ", ".join(cols) + " FROM messages WHERE " + cond_source
+           + "categorie IS NOT NULL AND corrige_at IS NULL"
+           + filtre_masse + filtre_date + " ORDER BY date_mail DESC")
     if args.limite:
         sql += f" LIMIT {int(args.limite)}"
     rows = cx.execute(sql, params).fetchall()
-    cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "suspect", "categorie", "urgence", "extrait",
-            "destinataires", "copies", "pieces_jointes", "signaux"]
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -1817,38 +2030,64 @@ def cmd_analyser_ia(args):
 
     print(f"[{NOM}] IA ({fournisseur}) sur {len(rows)} message(s)…")
 
-    faits, erreurs, questions = 0, 0, 0
+    def repli(row, source):
+        """Pas de jugement IA : le tri déterministe tient lieu de filet (jamais enterré).
+        'erreur' = réponse rejetée (non rejugée d'office) ; None = panne, on réessaiera."""
+        case = deduire_case_topo(row.get("urgence") or "normale", None,
+                                 row.get("pour_moi") == 1 or row.get("important") == 1,
+                                 aujourdhui)
+        cx.execute("UPDATE messages SET ia_source=?, ia_at=?, case_topo=? WHERE message_id=?",
+                   (source, datetime.now(timezone.utc).isoformat() if source else None,
+                    case, row["message_id"]))
+
+    faits, erreurs, questions, pannes = 0, 0, 0, 0
     t0 = time.time()
     for r in rows:
         row = dict(zip(cols, r))
         spec = (_adresses_spec(row["de_adresse"] or "") or [""])[0]
         profil = profils.get(spec)
+        res, err = None, None
         try:
             if fournisseur == "mock":
-                res = ia_bouchon(row, profil)
+                ok, res, err = valider_sortie(ia_bouchon(row, profil), taxo_noms, exts)
             else:
-                entree = construire_entree_ia(cfg, row, profil, fils, aujourdhui)
-                res = _extraire_json(appeler_mistral(cfg_ia, systeme, entree))
-        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+                entree = construire_entree_ia(
+                    cfg, row, profil, fils, aujourdhui, attente,
+                    _exemples_txt(exemples_pertinents(cx, row)))
+                ok = False
+                for essai in (1, 2):      # une seconde chance si la réponse est hors contrat
+                    try:
+                        brut = _extraire_json(appeler_mistral(cfg_ia, systeme, entree))
+                    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+                        raise
+                    except Exception as e:
+                        ok, res, err = False, None, f"réponse illisible ({e})"
+                        continue
+                    # Validation stricte : une réponse non conforme (ou un mail piégé)
+                    # ne pilote jamais le cockpit.
+                    ok, res, err = valider_sortie(brut, taxo_noms, exts)
+                    if ok:
+                        break
+            pannes = 0
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
             erreurs += 1
+            pannes += 1
+            repli(row, None)
             if erreurs <= 3:
                 print(f"[{NOM}] appel IA échoué : {e}", file=sys.stderr)
+            if pannes >= 3:
+                print(f"[{NOM}] IA injoignable : arrêt de la passe, le tri par les règles "
+                      f"reste affiché ; nouvel essai au prochain cycle.", file=sys.stderr)
+                break
             continue
         except Exception as e:
-            erreurs += 1
-            cx.execute("UPDATE messages SET ia_source=?, ia_at=? WHERE message_id=?",
-                       ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
-            continue
+            ok, res, err = False, None, str(e)
 
-        # Validation stricte : une réponse non conforme (ou un mail piégé) ne pilote
-        # jamais le cockpit → ia_source='erreur', repli sur le déterministe.
-        ok, res, err = valider_sortie(res, taxo_noms, exts)
         if not ok:
             erreurs += 1
             if erreurs <= 5:
                 print(f"[{NOM}] jugement rejeté ({err}) : {row['message_id']}", file=sys.stderr)
-            cx.execute("UPDATE messages SET ia_source=?, ia_at=? WHERE message_id=?",
-                       ("erreur", datetime.now(timezone.utc).isoformat(), row["message_id"]))
+            repli(row, "erreur")
             continue
 
         case = deduire_case_topo(res["urgence"], res["echeance"],
@@ -1885,7 +2124,8 @@ def cmd_reset_ia(args):
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
     cols = [c for c in COLONNES_ANALYSE if c.startswith("ia_")]
-    cx.execute("UPDATE messages SET " + ", ".join(f"{c}=NULL" for c in cols))
+    cx.execute("UPDATE messages SET " + ", ".join(f"{c}=NULL" for c in cols)
+               + ", case_topo=NULL WHERE corrige_at IS NULL")
     cx.commit()
     print(f"[{NOM}] jugements IA effacés. Relance 'analyser-ia'.")
     cx.close()
@@ -1897,7 +2137,7 @@ def cmd_extraire_corps(args):
     cfg = charger_config(args.config)
     cx = connexion(cfg["base_sqlite"])
     _assurer_colonnes(cx)
-    maxlen = int(cfg.get("ia_extrait_max", PARAMS["ia_extrait_max_defaut"]))
+    maxlen = _extrait_max(cfg)
     cond = "extrait IS NULL OR extrait=''"
     if getattr(args, "retout", False):
         cond = "1=1"
@@ -1932,32 +2172,33 @@ def cmd_extraire_corps(args):
 
 
 def cmd_brief(args):
-    """Topo du matin en cases, d'après le jugement IA (repli sur le déterministe)."""
+    """Topo du matin en cases (jugement IA, repli sur le déterministe), case du JOUR."""
     cfg = charger_config(args.config)
+    charger_moteur(cfg)
     cx = connexion(cfg["base_sqlite"])
-    cases = [("maintenant", "MAINTENANT"), ("cette_semaine", "CETTE SEMAINE"),
-             ("ce_mois", "CE MOIS — À NE PAS OUBLIER")]
+    _assurer_colonnes(cx)
+    t = elements_topo(cx, cfg)
+    titres = {"maintenant": "MAINTENANT", "cette_semaine": "CETTE SEMAINE",
+              "ce_mois": "CE MOIS — À NE PAS OUBLIER"}
     print("=== Topo du matin ===\n")
-    for cle, titre in cases:
-        rows = cx.execute(
-            """SELECT date_mail, de_adresse, COALESCE(ia_tache, sujet), ia_echeance, ia_question
-               FROM messages WHERE case_topo=? AND COALESCE(ia_action,1)=1
-               ORDER BY date_mail DESC LIMIT ?""", (cle, args.nombre)).fetchall()
-        if not rows:
+    for ev in t["evenements"]:
+        print(f"  📅 {ev['quand']} — {ev['quoi']} ({ev['nom']})")
+    for cle, titre in titres.items():
+        els = [e for e in t["elements"] if e["case"] == cle][:args.nombre]
+        if not els:
             continue
-        print(f"— {titre} —")
-        for d, de, tache, ech, q in rows:
-            ligne = f"  • {(tache or '(sans objet)')[:66]}"
-            if ech and ech not in ("aucune", None):
-                ligne += f"  [échéance {ech}]"
+        print(f"\n— {titre} —")
+        for e in els:
+            ligne = f"  • {(e['tache'] or e['resume'] or e['sujet'] or '(sans objet)')[:70]}"
+            if e["echeance"]:
+                ligne += f"  [échéance {e['echeance']}{' — EN RETARD' if e['retard'] else ''}]"
             print(ligne)
-            print(f"      {(de or '')[:40]}")
-            if q:
-                print(f"      ❓ {q[:90]}")
-        print()
-    nb_q = cx.execute("SELECT COUNT(*) FROM messages WHERE ia_question IS NOT NULL AND ia_question<>''").fetchone()[0]
-    if nb_q:
-        print(f"({nb_q} question(s) en attente de ta réponse — voir ci-dessus.)")
+            print(f"      {e['nom'][:40]} — urgence {e['urgence']}"
+                  + ("" if e["juge"] else " (tri par les règles, IA en attente)"))
+            if e["question"]:
+                print(f"      ❓ {e['question'][:90]}")
+    if t["anciens"]:
+        print(f"\n({t['anciens']} sujet(s) plus ancien(s) encore ouvert(s) — voir le cockpit.)")
     manque = cx.execute("SELECT COUNT(*) FROM messages WHERE ia_source IS NULL AND (bulk=0 OR important=1) AND categorie IS NOT NULL").fetchone()[0]
     if manque:
         print(f"\n({manque} message(s) pas encore jugés par l'IA — lance 'analyser-ia'.)")
@@ -2005,36 +2246,84 @@ def backfill_non_lu(cx):
     return n
 
 
-CASES_COCKPIT = [("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"),
+CASES_COCKPIT = [("agenda", "Agenda — aujourd'hui et demain"),
+                 ("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"),
                  ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
 
 
+_SQL_MASSE = ("(COALESCE(bulk,0)=1 AND COALESCE(important,0)=0 "
+              "AND (ia_source IS NULL OR ia_source='erreur'))")
+
+
+def _ext_json(v):
+    try:
+        d = json.loads(v) if isinstance(v, str) and v else (v or {})
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
+    """Tout message classé est visible (zéro perte) : jugé par l'IA, ou — IA en panne,
+    réponse rejetée, pas encore passée — rangé par le tri déterministe. Le courrier de
+    masse non important a sa propre vue. La case est recalculée à la date du jour."""
     cx = sqlite3.connect(db)
-    profils, _ = profils_expediteurs(cx)   # mémoire : fréquence par expéditeur
-    conds = ["ia_source IS NOT NULL"]
+    profils, _, _ = profils_expediteurs(cx)   # mémoire : fréquence par expéditeur
+    conds = ["categorie IS NOT NULL"]
     params = []
     if vue == "reporte":
         conds.append("etat='reporte'")
+    elif vue == "masse":
+        conds += ["etat IS NULL", _SQL_MASSE]
     else:
-        conds.append("etat IS NULL")
+        conds += ["etat IS NULL", "NOT " + _SQL_MASSE]
         if depuis:
             conds.append("date_mail >= ?")
             params.append(depuis)
         elif non_lus:
             conds.append("(non_lu=1 OR non_lu IS NULL)")
+    cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance", "ia_urgence",
+            "question", "non_lu", "ia_source", "urgence", "pour_moi", "important",
+            "ia_action", "justification", "ia_extensions", "raison", "corrige_at"]
     rows = cx.execute(
         f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
-            ia_echeance, ia_urgence, case_topo, ia_question, non_lu
-            FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC""",
+            ia_echeance, ia_urgence, ia_question, non_lu, ia_source, urgence, pour_moi,
+            important, ia_action, ia_justification, ia_extensions, raison, corrige_at
+            FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC
+            {'LIMIT 500' if vue == 'masse' else ''}""",
         params).fetchall()
     cx.close()
-    cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance",
-            "urgence", "case_topo", "question", "non_lu"]
+    aujourdhui = datetime.now().strftime("%Y-%m-%d")
+    demain = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     _urg_prio = {"critique": "haute", "haute": "haute", "normale": "normale", "basse": "basse"}
     par_case = {c: [] for c, _ in CASES_COCKPIT}
     for r in rows:
         it = dict(zip(cols, r))
+        juge = _juge_par_ia(it["ia_source"]) and bool(it["ia_urgence"])
+        it["case_topo"] = ("aucune" if vue == "masse" else
+                           case_du_jour({**it, "ia_echeance": it["echeance"]}, aujourdhui))
+        it["urgence"] = it["ia_urgence"] if juge else (it["urgence"] or "normale")
+        # D'où vient le classement : pour ne jamais faire passer une estimation pour un jugement.
+        it["source"] = ("humain" if it["corrige_at"] else "ia" if juge else
+                        "erreur" if it["ia_source"] == "erreur" else
+                        "regles" if vue == "masse" else "attente")
+        if not juge:
+            it["resume"], it["tache"], it["question"], it["echeance"] = None, None, None, None
+            it["justification"] = it["raison"]
+        ext = _ext_json(it.pop("ia_extensions")) if juge else {}
+        it.pop("ia_extensions", None)
+        it["concerne"] = ext.get("concerne")
+        it["evenement"] = ext.get("evenement") if isinstance(ext.get("evenement"), dict) else None
+        ech = it["echeance"] if it["echeance"] not in (None, "", "aucune") else None
+        it["retard"] = bool(ech and ech < aujourdhui)
+        # Un événement d'aujourd'hui ou de demain ne reste pas enfoui dans « pour info »
+        # sous prétexte qu'il n'appelle aucune action.
+        ev = it["evenement"]
+        if (it["case_topo"] == "aucune" and vue == "atraiter" and ev
+                and ev.get("date") in (aujourdhui, demain) and not ev.get("annule")):
+            it["case_topo"] = "agenda"
+        d = _local(_dt_message(it["date"]))
+        it["date_txt"] = d.strftime("%d/%m %H:%M") if d else ""
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
@@ -2042,8 +2331,104 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
         it["freq"] = p["n"] if p else 0              # combien de mails de cet expéditeur
         it["actif"] = bool(p and p["n"] >= PARAMS["profil_actif_n_min"]
                            and p.get("recent", 0) >= PARAMS["profil_actif_recent_min"])
+        for k in ("ia_urgence", "raison", "ia_action", "pour_moi", "important"):
+            it.pop(k, None)
         par_case.get(it["case_topo"] or "aucune", par_case["aucune"]).append(it)
+    for items in par_case.values():        # le plus urgent d'abord, puis le plus récent
+        items.sort(key=lambda it: NIVEAU_RANG.get(it["urgence"], 2))
     return [{"cle": c, "titre": t, "items": par_case[c]} for c, t in CASES_COCKPIT]
+
+
+def corriger_jugement(cx, mid, quoi):
+    """Correction faite dans le cockpit : ▲ plus urgent, ▼ moins urgent, « pas pour moi »,
+    « c'est pour moi ». Appliquée tout de suite, jamais rejugée d'office, et gardée
+    comme jurisprudence : les prochains messages semblables la reçoivent en exemple."""
+    r = cx.execute(
+        "SELECT de_adresse, sujet, extrait, categorie, urgence, pour_moi, important, "
+        "ia_source, ia_categorie, ia_urgence, ia_action, ia_extensions "
+        "FROM messages WHERE message_id=?", (mid,)).fetchone()
+    if not r:
+        return False
+    (de, sujet, extrait, cat_r, urg_r, pour_moi, important,
+     src, cat_ia, urg_ia, action_ia, ext_json) = r
+    juge = _juge_par_ia(src) and bool(urg_ia)
+    urg = urg_ia if juge else (urg_r or "normale")
+    action = bool(action_ia) if juge else (pour_moi == 1 or important == 1)
+    cat = (cat_ia if juge else cat_r) or "autre"
+    ext = _ext_json(ext_json)
+    avant = {"urgence": urg, "action_attendue": action, "concerne": ext.get("concerne"),
+             "source": src}
+    rang = NIVEAU_RANG.get(urg, 2)
+    if quoi == "plus":
+        urg, action = _rang_vers_code(max(0, rang - 1)), True
+    elif quoi == "moins":
+        urg = _rang_vers_code(min(3, rang + 1))
+    elif quoi == "pas_pour_moi":
+        action, ext["concerne"] = False, "autre"
+    elif quoi == "pour_moi":
+        action, ext["concerne"] = True, "moi"
+    else:
+        return False
+    ext.setdefault("evenement", None)
+    ext.setdefault("concerne", "moi" if action else "autre")
+    maintenant = datetime.now(timezone.utc).isoformat()
+    ech = cx.execute("SELECT ia_echeance FROM messages WHERE message_id=?", (mid,)).fetchone()[0]
+    case = deduire_case_topo(urg, ech, action, datetime.now().strftime("%Y-%m-%d"))
+    cx.execute(
+        "UPDATE messages SET ia_urgence=?, ia_action=?, ia_categorie=?, "
+        "ia_echeance=COALESCE(ia_echeance,'aucune'), ia_extensions=?, case_topo=?, "
+        "ia_source=?, corrige_at=? WHERE message_id=?",
+        (urg, int(action), cat, json.dumps(ext, ensure_ascii=False), case,
+         src if juge else "humain", maintenant, mid))
+    spec = (_adresses_spec(de or "") or [""])[0]
+    dom = _domaine(spec)
+    cx.execute(
+        "INSERT INTO corrections (message_id, de_adresse, domaine, sujet, mots, extrait, "
+        "categorie, urgence, action_attendue, concerne, avant, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (mid, spec, dom if dom not in FREEMAIL else "", sujet, _mots_cles(sujet),
+         re.sub(r"\s+", " ", (extrait or ""))[:200], cat, urg, int(action),
+         ext.get("concerne"), json.dumps(avant, ensure_ascii=False), maintenant))
+    cx.commit()
+    return True
+
+
+def enregistrer_reglages(cfg, donnees):
+    """Écrit le profil utilisateur et les adresses dans le fichier de configuration
+    (écriture atomique) et met à jour la config en mémoire. Renvoie True si
+    'mes_adresses' a changé (le tri déterministe « à moi / en copie » est à refaire)."""
+    chemin = Path(cfg.get("_chemin_config") or "config.json")
+    brut = json.loads(chemin.read_text(encoding="utf-8")) if chemin.exists() else {}
+    u = donnees.get("utilisateur") or {}
+    util = {k: str(u.get(k) or "").strip()[:(1500 if k == "profil" else 120)]
+            for k in ("nom", "fonction", "profil")}
+    adresses = []
+    for a in (donnees.get("mes_adresses") or []):
+        a = str(a or "").strip().lower()
+        if "@" in a and a not in adresses:
+            adresses.append(a)
+    change = sorted(adresses) != sorted(a.lower() for a in (cfg.get("mes_adresses") or []))
+    brut["utilisateur"], brut["mes_adresses"] = util, adresses
+    tmp = chemin.with_suffix(chemin.suffix + ".tmp")
+    tmp.write_text(json.dumps(brut, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, chemin)
+    cfg["utilisateur"], cfg["mes_adresses"] = util, adresses
+    return change
+
+
+def alertes_reglages(cfg):
+    """Ce qui, dans les réglages, dégrade la pertinence — affiché en bandeau au cockpit."""
+    out = []
+    if not (cfg.get("mes_adresses") or []):
+        out.append("Tes adresses ne sont pas renseignées : impossible de distinguer "
+                   "« à moi » de « en copie », tout est plafonné à « normale ».")
+    if not _utilisateur_txt(cfg):
+        out.append("Ta fonction n'est pas décrite : l'IA ne sait pas pour qui elle trie.")
+    cfg_ia = _config_ia(cfg)
+    if cfg_ia.get("fournisseur", "mock") == "mock":
+        out.append("IA en mode bouchon (« mock ») : aucun vrai jugement, résumés = objets des mails.")
+    elif not cfg_ia.get("cle"):
+        out.append("Clé IA absente (MISTRAL_API_KEY) : le tri repose sur les seules règles.")
+    return out
 
 
 # Étiquette partagée appliquée dans Thunderbird quand un mail est « Traité »
@@ -2054,17 +2439,45 @@ ETIQUETTE_TRAITE = {"cle": "iamail_traite", "nom": "Traité IAMail", "couleur": 
 def faire_cockpit_handler(cfg):
     db = cfg["base_sqlite"]
     etat_audio = {"chemin": None}
+    etat_rejuge = {"en_cours": False}
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
+        def _origine_permise(self):
+            """Origine autorisée à LIRE les réponses : l'extension Thunderbird
+            (moz-extension://…). Le cockpit lui-même est en même origine."""
+            o = (self.headers.get("Origin") or "").strip().lower()
+            return o if o.startswith("moz-extension://") else None
+
+        def _autorise(self):
+            """Le serveur n'écoute que sur 127.0.0.1, mais n'importe quelle page web
+            ouverte sur le poste peut tenter d'y envoyer des requêtes. On n'accepte que
+            le cockpit (même origine) et l'extension : Host local (anti DNS-rebinding),
+            et, si le navigateur annonce une origine, qu'elle soit l'une des nôtres."""
+            port = self.server.server_address[1]
+            if (self.headers.get("Host") or "").strip().lower() not in (
+                    f"127.0.0.1:{port}", f"localhost:{port}"):
+                return False
+            o = (self.headers.get("Origin") or "").strip().lower()
+            if not o:
+                return True
+            return (o in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
+                    or o.startswith("moz-extension://"))
+
+        def _refuse(self):
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def _cors(self):
-            # Serveur strictement local : l'extension Thunderbird appelle depuis
-            # son origine moz-extension://… — on autorise l'accès.
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            o = self._origine_permise()
+            if o:
+                self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin"))
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
         def _json(self, obj, code=200):
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -2076,6 +2489,8 @@ def faire_cockpit_handler(cfg):
             self.wfile.write(data)
 
         def do_OPTIONS(self):
+            if not self._autorise():
+                return self._refuse()
             self.send_response(204)
             self._cors()
             self.end_headers()
@@ -2087,6 +2502,8 @@ def faire_cockpit_handler(cfg):
         def do_GET(self):
             from urllib.parse import urlparse, parse_qs
             u = urlparse(self.path)
+            if not self._autorise():
+                return self._refuse()
             if u.path == "/":
                 page = PAGE_COCKPIT.encode("utf-8")
                 self.send_response(200)
@@ -2100,14 +2517,14 @@ def faire_cockpit_handler(cfg):
                 non_lus = q.get("nonlus", ["0"])[0] == "1"
                 depuis = (q.get("depuis", [""])[0] or "").strip() or None
                 self._json({"cases": cockpit_liste(db, vue, non_lus, depuis)})
-            elif u.path == "/api/topo-audio":
-                court, complet = construire_script_topo(db)
-                sortie = str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
-                chemin, err = generer_audio(complet, cfg, sortie)
-                etat_audio["chemin"] = chemin
-                self._json({"ok": bool(chemin), "court": court,
-                            "url": ("/audio?t=" + str(int(time.time()))) if chemin else None,
-                            "erreur": err})
+            elif u.path == "/api/reglages":
+                cfg_ia = _config_ia(cfg)
+                self._json({"utilisateur": cfg.get("utilisateur") or {},
+                            "mes_adresses": cfg.get("mes_adresses") or [],
+                            "alertes": alertes_reglages(cfg),
+                            "ia": {"fournisseur": cfg_ia.get("fournisseur", "mock"),
+                                   "modele": cfg_ia.get("modele", "")},
+                            "rejuge_en_cours": etat_rejuge["en_cours"]})
             elif u.path == "/audio":
                 ch = etat_audio["chemin"]
                 if ch and Path(ch).exists():
@@ -2125,11 +2542,13 @@ def faire_cockpit_handler(cfg):
                 a_marquer = [r[0] for r in cx.execute(
                     "SELECT message_id FROM messages WHERE etat='traite' "
                     "AND (tb_sync IS NULL OR tb_sync!='traite') "
-                    "AND message_id NOT LIKE 'sansid:%'").fetchall()]
+                    "AND message_id NOT LIKE 'sansid:%' "
+                    "AND message_id NOT LIKE 'synth-%'").fetchall()]
                 a_demarquer = [r[0] for r in cx.execute(
                     "SELECT message_id FROM messages WHERE tb_sync='traite' "
                     "AND (etat IS NULL OR etat!='traite') "
-                    "AND message_id NOT LIKE 'sansid:%'").fetchall()]
+                    "AND message_id NOT LIKE 'sansid:%' "
+                    "AND message_id NOT LIKE 'synth-%'").fetchall()]
                 cx.close()
                 self._json({"etiquette": ETIQUETTE_TRAITE,
                             "a_marquer": a_marquer, "a_demarquer": a_demarquer})
@@ -2137,9 +2556,60 @@ def faire_cockpit_handler(cfg):
                 self._json({"erreur": "inconnu"}, 404)
 
         def do_POST(self):
-            c = self._corps()
+            if not self._autorise():
+                return self._refuse()
+            try:
+                c = self._corps()
+            except Exception:
+                return self._json({"erreur": "JSON attendu"}, 400)
+            if not isinstance(c, dict):
+                return self._json({"erreur": "objet JSON attendu"}, 400)
             mid = c.get("id")
-            if self.path == "/api/action":
+            if self.path == "/api/topo-audio":
+                # POST (et non GET) : la génération peut appeler l'IA, donc coûter.
+                court, complet, source = construire_script_topo(
+                    cfg, utiliser_ia=not c.get("sans_ia"))
+                sortie = str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
+                chemin, err = generer_audio(complet, cfg, sortie)
+                etat_audio["chemin"] = chemin
+                self._json({"ok": bool(chemin), "court": court, "complet": complet,
+                            "source": source,
+                            "url": ("/audio?t=" + str(int(time.time()))) if chemin else None,
+                            "erreur": err})
+            elif self.path == "/api/corriger":
+                cx = sqlite3.connect(db)
+                ok = corriger_jugement(cx, mid, c.get("quoi"))
+                cx.close()
+                self._json({"ok": ok}, 200 if ok else 400)
+            elif self.path == "/api/reglages":
+                change = enregistrer_reglages(cfg, c)
+                if change and cfg.get("_chemin_config"):
+                    # « à moi / en copie » dépend des adresses : on refait le tri par
+                    # les règles (local, gratuit) en arrière-plan.
+                    threading.Thread(target=lambda: cmd_analyser(types.SimpleNamespace(
+                        config=cfg["_chemin_config"], retout=True, silencieux=True)),
+                        daemon=True).start()
+                self._json({"ok": True, "alertes": alertes_reglages(cfg)})
+            elif self.path == "/api/rejuger":
+                # Rejuge les derniers jours avec le profil courant (appels IA payants,
+                # bornés) — utile juste après avoir décrit sa fonction.
+                if etat_rejuge["en_cours"] or not cfg.get("_chemin_config"):
+                    return self._json({"ok": False, "erreur": "déjà en cours"}, 409)
+                jours = max(1, min(60, int(c.get("jours") or 14)))
+
+                def tache():
+                    etat_rejuge["en_cours"] = True
+                    try:
+                        cmd_analyser_ia(types.SimpleNamespace(
+                            config=cfg["_chemin_config"], mock=False, retout=True,
+                            limite=300, jours=jours, compter=False))
+                    except BaseException as e:
+                        print(f"[{NOM}] rejugement : {e}", file=sys.stderr)
+                    finally:
+                        etat_rejuge["en_cours"] = False
+                threading.Thread(target=tache, daemon=True).start()
+                self._json({"ok": True, "jours": jours})
+            elif self.path == "/api/action":
                 e = c.get("etat")
                 e = None if e in (None, "", "a_traiter") else e
                 cx = sqlite3.connect(db)
@@ -2236,29 +2706,59 @@ button:hover{filter:brightness(.97)}button.ok{border-color:#12b76a;color:#12b76a
 .ctl{font-size:13px;color:var(--mut);display:flex;align-items:center;gap:6px}
 .spacer{margin-left:auto}#vide{color:var(--mut);padding:50px 0;text-align:center;font-size:15px}
 input[type=date]{font:13px system-ui;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--tx)}
+.resume{font-size:13px;margin:3px 0}.why{color:var(--mut);font-size:12px;margin-top:4px;font-style:italic}
+.badge.warn{border-color:var(--haute);color:var(--haute)}.badge.ev{border-color:var(--acc);color:var(--acc)}
+button.mini{padding:6px 9px;color:var(--mut)}
+#alerte{display:none;max-width:840px;margin:10px auto 0;padding:0 16px}
+#alerte div{background:var(--card);border:1px solid var(--haute);border-radius:10px;padding:10px 14px;font-size:13px}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--tx);width:min(640px,92vw);padding:18px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+dialog input[type=text],dialog textarea{width:100%;font:14px system-ui;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--tx)}
+dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;color:var(--mut);margin-top:4px}
+#topotexte{white-space:pre-wrap;font-size:13px;margin-top:8px}
 </style></head><body>
 <header>
   <h1>🛩️ IAMail</h1>
-  <div class="seg"><button id="v-atraiter" class="on">À traiter</button><button id="v-reporte">Reportés</button></div>
+  <div class="seg"><button id="v-atraiter" class="on">À traiter</button><button id="v-reporte">Reportés</button><button id="v-masse" title="Newsletters et courrier de masse non important : rangés par les règles, jamais envoyés à l'IA">Masse</button></div>
   <button id="audio" class="pri">🔊 Topo audio</button>
   <span id="compte" class="badge"></span>
   <label class="ctl" id="l-nonlus"><input type="checkbox" id="nonlus"> non-lus seulement</label>
   <label class="ctl spacer">Retour d'absence depuis <input type="date" id="depuis"></label>
+  <button id="reglages" title="Ta fonction, tes adresses">⚙ Réglages</button>
 </header>
+<div id="alerte"><div id="alertetexte"></div></div>
+<dialog id="dlg">
+  <h1>Réglages — pour qui l'IA trie</h1>
+  <label for="r-nom">Ton nom</label><input type="text" id="r-nom" maxlength="120">
+  <label for="r-fonction">Ta fonction</label><input type="text" id="r-fonction" maxlength="120" placeholder="Responsable informatique et communication d'une fédération d'entreprises">
+  <label for="r-profil">Ce qui compte pour toi</label>
+  <textarea id="r-profil" maxlength="1500" placeholder="Ce dont je suis responsable : …&#10;Urgent pour moi : une panne qui bloque plusieurs collègues, une demande de la direction, une échéance…&#10;Personnes ou organismes prioritaires : …&#10;Ce qui ne me concerne pas (même si je suis en copie) : …"></textarea>
+  <div class="aide">Écris comme tu l'expliquerais à un nouvel assistant. Ce texte est joint à chaque mail envoyé à l'IA.</div>
+  <label for="r-adresses">Tes adresses (une par ligne, alias compris)</label>
+  <textarea id="r-adresses" style="min-height:60px"></textarea>
+  <div class="btns"><button class="ok" id="r-ok">Enregistrer</button>
+    <button id="r-rejuger" title="Appels IA payants, bornés à 300 messages">Enregistrer et rejuger les 14 derniers jours</button>
+    <button id="r-annuler">Fermer</button></div>
+  <div class="aide" id="r-etat"></div>
+</dialog>
 <div id="barreaudio" style="display:none;max-width:840px;margin:10px auto 0;padding:0 16px">
   <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px">
     <div id="audiotexte" style="font-size:13px;color:var(--mut);margin-bottom:6px"></div>
-    <audio id="lecteur" controls style="width:100%"></audio></div></div>
+    <audio id="lecteur" controls style="width:100%"></audio>
+    <details><summary style="font-size:13px;color:var(--mut);cursor:pointer">Lire le topo complet <span id="toposource" class="badge"></span></summary><div id="topotexte"></div></details></div></div>
 <main id="main"></main>
 <script>
 const api=(p,b)=>fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 document.getElementById('audio').onclick=async()=>{
   const b=document.getElementById('audio');b.textContent='⏳ génération…';b.disabled=true;
-  try{const r=await api('/api/topo-audio');
+  try{const r=await api('/api/topo-audio',{});
     document.getElementById('audiotexte').textContent=r.court||'';
-    if(r.ok&&r.url){const l=document.getElementById('lecteur');l.src=r.url;
-      document.getElementById('barreaudio').style.display='';l.play().catch(()=>{});}
-    else{alert('Pas de voix : '+(r.erreur||'')+"\\nInstalle espeak-ng (sudo apt install espeak-ng).");}
+    document.getElementById('topotexte').textContent=r.complet||'';
+    document.getElementById('toposource').textContent=r.source==='ia'?"rédigé par l'IA":'gabarit local (IA indisponible)';
+    document.getElementById('barreaudio').style.display='';
+    if(r.ok&&r.url){const l=document.getElementById('lecteur');l.src=r.url;l.play().catch(()=>{});}
+    else{alert('Pas de voix : '+(r.erreur||'')+"\\nInstalle espeak-ng (sudo apt install espeak-ng). Le texte du topo reste lisible.");}
   }catch(e){alert('Erreur: '+e);} finally{b.textContent='🔊 Topo audio';b.disabled=false;}
 };
 const esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -2273,20 +2773,34 @@ function btns(it){
   const rem=state.vue==='reporte'
     ? `<button data-a="remettre">Remettre à traiter</button>`
     : `<button data-a="reporte">Reporter</button>`;
+  const corr=state.vue==='masse'?'':`<button class="mini" data-a="plus" title="Plus urgent que ça — l'IA s'en souviendra">▲</button>
+     <button class="mini" data-a="moins" title="Moins urgent que ça — l'IA s'en souviendra">▼</button>
+     ${it.concerne==='autre'?'<button class="mini" data-a="pour_moi" title="Si, c\\'est à moi d\\'agir">C\\'est pour moi</button>'
+       :'<button class="mini" data-a="pas_pour_moi" title="Ce n\\'est pas à moi d\\'agir — l\\'IA s\\'en souviendra">Pas pour moi</button>'}`;
   return `<div class="btns">
      <button class="pri" data-a="ouvrir">Ouvrir l'email</button>
      <button data-a="deleguer">Déléguer…</button>
-     <button class="ok" data-a="traite">Traité</button>${rem}</div>`;
+     <button class="ok" data-a="traite">Traité</button>${rem}${corr}</div>`;
 }
 function brancher(el,it){el.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,el));}
 
+const srcBadge=it=>({erreur:'<span class="badge warn" title="La réponse de l\\'IA a été rejetée : classement par les règles">tri par les règles</span>',
+  attente:'<span class="badge" title="Pas encore jugé par l\\'IA : classement provisoire par les règles">IA en attente</span>',
+  humain:'<span class="badge" title="Tu as corrigé ce classement">corrigé</span>'}[it.source]||'');
+const evBadge=it=>{const e=it.evenement;if(!e||!e.date)return '';
+  return `<span class="badge ev">${e.annule?'❌ annulé : ':'📅 '}${esc(e.date)}${e.heure?' '+esc(e.heure):''}${e.lieu?' — '+esc(e.lieu):''}</span>`;};
+const quiBadge=it=>it.concerne==='autre'?'<span class="badge">pour info — pas à toi d\\'agir</span>':(it.concerne==='collectif'?'<span class="badge">collectif</span>':'');
 function carte(it){
   const d=document.createElement('div');d.className='item '+(it.priorite||'basse');
-  const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">⏱ ${esc(it.echeance)}</span>`:'';
+  const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">${it.retard?'⚠ en retard : ':'⏱ '}${esc(it.echeance)}</span>`:'';
   const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
   const q=it.question?`<div class="q">❓ ${esc(it.question)}</div>`:'';
-  d.innerHTML=`<div class="tache">${esc(it.tache||it.resume||'(sans objet)')}${ech}${nl}</div>
-   <div class="sujet">${esc(it.sujet)}</div><div class="meta">${esc(it.de)} ${freqBadge(it)}</div>${q}${btns(it)}`;
+  const titre=it.tache||it.resume||it.sujet||'(sans objet)';
+  const res=(it.resume&&it.resume!==titre)?`<div class="resume">${esc(it.resume)}</div>`:'';
+  const why=it.justification?`<div class="why">${esc(it.justification)}</div>`:'';
+  d.innerHTML=`<div class="tache">${esc(titre)}${ech}${evBadge(it)}${nl}</div>${res}
+   ${it.sujet&&it.sujet!==titre?`<div class="sujet">${esc(it.sujet)}</div>`:''}
+   <div class="meta">${esc(it.de)} · ${esc(it.date_txt)} ${freqBadge(it)}${quiBadge(it)}${srcBadge(it)}</div>${why}${q}${btns(it)}`;
   brancher(d,it);return d;
 }
 function groupe(items){
@@ -2305,7 +2819,7 @@ function groupe(items){
     const r=document.createElement('div');r.className='item row';r.style.border='0';r.style.margin='0';r.style.borderRadius='0';
     r.classList.remove('haute','normale');
     const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
-    r.innerHTML=`<div class="who">${esc(it.de)} — ${esc(it.sujet)}${nl} ${freqBadge(it)}</div>${btns(it)}`;
+    r.innerHTML=`<div class="who">${esc(it.de)} — ${esc(it.tache||it.resume||it.sujet)}${evBadge(it)}${nl} ${freqBadge(it)}${quiBadge(it)}${srcBadge(it)}</div>${btns(it)}`;
     brancher(r,it);g.appendChild(r);
   }
   return g;
@@ -2316,6 +2830,7 @@ async function actionGroupe(items,a,g){
   g.remove();total-=items.length;maj();
 }
 async function action(it,a,el){
+  if(['plus','moins','pas_pour_moi','pour_moi'].includes(a)){await api('/api/corriger',{id:it.id,quoi:a});charger();return;}
   if(a==='ouvrir'||a==='deleguer'){await api('/api/ouvrir',{id:it.id});
      if(a==='deleguer')alert("L'email s'ouvre dans ton logiciel : fais « Transférer », ajoute le collègue et ta note.");
      return;}
@@ -2325,7 +2840,7 @@ async function action(it,a,el){
   if(grp&&!grp.querySelector('.row'))grp.remove();
   total--;maj();
 }
-function maj(){document.getElementById('compte').textContent=total+(state.vue==='reporte'?' reporté(s)':' à traiter');
+function maj(){document.getElementById('compte').textContent=total+(state.vue==='reporte'?' reporté(s)':(state.vue==='masse'?' en masse (500 max)':' à traiter'));
   if(total<=0)document.getElementById('main').innerHTML='<div id="vide">🎉 Rien ici.</div>';}
 async function charger(){
   const p=new URLSearchParams({vue:state.vue,nonlus:state.nonlus?1:0,depuis:state.depuis});
@@ -2343,10 +2858,32 @@ async function charger(){
 function setVue(v){state.vue=v;
   document.getElementById('v-atraiter').classList.toggle('on',v==='atraiter');
   document.getElementById('v-reporte').classList.toggle('on',v==='reporte');
+  document.getElementById('v-masse').classList.toggle('on',v==='masse');
   document.getElementById('l-nonlus').style.display=(v==='atraiter'&&!state.depuis)?'':'none';
   charger();}
 document.getElementById('v-atraiter').onclick=()=>setVue('atraiter');
 document.getElementById('v-reporte').onclick=()=>setVue('reporte');
+document.getElementById('v-masse').onclick=()=>setVue('masse');
+// --- Réglages : pour qui l'IA trie ---
+const $=id=>document.getElementById(id);
+function alertes(l){$('alerte').style.display=(l&&l.length)?'block':'none';
+  $('alertetexte').innerHTML=(l||[]).map(x=>'⚠ '+esc(x)).join('<br>')+' <a href="#" id="al-regl">Ouvrir les réglages</a>';
+  const a=$('al-regl');if(a)a.onclick=e=>{e.preventDefault();ouvrirReglages();};}
+async function ouvrirReglages(){const r=await api('/api/reglages');const u=r.utilisateur||{};
+  $('r-nom').value=u.nom||'';$('r-fonction').value=u.fonction||'';$('r-profil').value=u.profil||'';
+  $('r-adresses').value=(r.mes_adresses||[]).join('\\n');
+  $('r-etat').textContent=r.rejuge_en_cours?'Rejugement en cours…':('IA : '+r.ia.fournisseur+(r.ia.modele?' / '+r.ia.modele:''));
+  $('dlg').showModal();}
+async function sauver(){const r=await api('/api/reglages',{utilisateur:{nom:$('r-nom').value,fonction:$('r-fonction').value,profil:$('r-profil').value},
+  mes_adresses:$('r-adresses').value.split(/[\\s,;]+/).filter(Boolean)});alertes(r.alertes);return r;}
+$('reglages').onclick=ouvrirReglages;
+$('r-annuler').onclick=()=>$('dlg').close();
+$('r-ok').onclick=async()=>{await sauver();$('dlg').close();charger();};
+$('r-rejuger').onclick=async()=>{await sauver();
+  if(!confirm("Rejuger les 14 derniers jours avec ce profil ? (appels IA payants, 300 messages au plus ; tes corrections sont conservées)"))return;
+  const r=await api('/api/rejuger',{jours:14});
+  $('r-etat').textContent=r.ok?'Rejugement lancé : recharge le cockpit dans quelques minutes.':('Impossible : '+(r.erreur||''));};
+api('/api/reglages').then(r=>alertes(r.alertes)).catch(()=>{});
 document.getElementById('nonlus').onchange=e=>{state.nonlus=e.target.checked;charger();};
 document.getElementById('depuis').onchange=e=>{state.depuis=e.target.value;
   document.getElementById('l-nonlus').style.display=(state.vue==='atraiter'&&!state.depuis)?'':'none';charger();};
@@ -2397,51 +2934,61 @@ _MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
          "août", "septembre", "octobre", "novembre", "décembre"]
 
 
-def _heure_parlee(d):
-    """'9 heures', '10 heures 56' — pensé pour la synthèse vocale."""
-    h, mn = d.hour, d.minute
-    base = "1 heure" if h == 1 else f"{h} heures"
-    if h == 0:
-        base = "minuit"
-    return base if mn == 0 else f"{base} {mn}"
-
-
-def _date_parlee(d, annee_courante):
-    """'le 9 novembre à 10 heures 56' ; ajoute l'année seulement si ce n'est pas l'année en cours."""
-    jour = "1er" if d.day == 1 else str(d.day)
-    an = "" if d.year == annee_courante else f" {d.year}"
-    return f"le {jour} {_MOIS[d.month - 1]}{an} à {_heure_parlee(d)}"
-
-
 def _echeance_parlee(ech):
-    """'aujourd'hui' / 'demain' / 'le 15 novembre' depuis une échéance AAAA-MM-JJ, sinon None."""
+    """'aujourd'hui' / 'demain' / 'le 15 novembre' depuis une échéance AAAA-MM-JJ, sinon None.
+    Une échéance passée est dite telle quelle : 'en retard depuis le 3 novembre'."""
     try:
         d = datetime.strptime((ech or "").strip(), "%Y-%m-%d").date()
     except Exception:
         return None
     delta = (d - datetime.now().date()).days
+    jour = "1er" if d.day == 1 else str(d.day)
+    if delta < 0:
+        return "hier, donc en retard" if delta == -1 else f"le {jour} {_MOIS[d.month - 1]}, donc en retard"
     if delta == 0:
         return "aujourd'hui"
     if delta == 1:
         return "demain"
+    if delta < 7:
+        return f"{_JOURS[d.weekday()]} {jour} {_MOIS[d.month - 1]}"
+    return f"le {jour} {_MOIS[d.month - 1]}"
+
+
+def _recu_parle(dm):
+    """'ce matin', 'hier', 'vendredi', 'le 3 novembre' — en heure LOCALE, sans l'heure
+    exacte (une voix qui lit « le 6 novembre à 10 heures 22 » à chaque phrase noie l'essentiel)."""
+    d = _local(_dt_message(dm))
+    if not d:
+        return ""
+    delta = (datetime.now().date() - d.date()).days
+    if delta <= 0:
+        return "ce matin" if d.hour < 12 else "cet après-midi"
+    if delta == 1:
+        return "hier"
+    if delta < 7:
+        return _JOURS[d.weekday()]
     jour = "1er" if d.day == 1 else str(d.day)
     return f"le {jour} {_MOIS[d.month - 1]}"
 
 
-def _phrase_message(de, tache, res, ech, dm, annee):
-    """Une phrase fluide : quand, qui, quoi, pour quand."""
-    quoi = (tache or res or "un message à regarder").strip().rstrip(".")
+def _phrase_message(de, tache, res, ech, dm, annee=None, sujet=None, pourquoi=None):
+    """Qui, quoi, pour quand — et pourquoi, pour ce qui presse."""
     nom = _nom_affiche(de)
-    d = _dt_message(dm)
-    if d:
-        quand = _date_parlee(d, annee)
-        phrase = f"{quand[0].upper()}{quand[1:]}, {nom} vous a écrit : {quoi}"
+    res = (res or "").strip().rstrip(".")
+    tache = (tache or "").strip().rstrip(".")
+    quand = _recu_parle(dm)
+    tete = f"{nom}, {quand}" if quand else nom
+    if res and tache and res.lower() != tache.lower():
+        phrase = f"{tete} : {res}. À faire : {tache}"
     else:
-        phrase = f"{nom} vous a écrit : {quoi}"
+        phrase = f"{tete} : {tache or res or _sujet_court(sujet) or 'un message à regarder'}"
     ep = _echeance_parlee(ech) if ech and ech not in ("aucune", None) else None
     if ep:
-        phrase += f", à faire pour {ep}"
-    return phrase + "."
+        phrase += f", pour {ep}"
+    phrase += "."
+    if pourquoi:
+        phrase += " " + pourquoi.strip().rstrip(".") + "."
+    return phrase
 
 
 def _sujet_court(sujet):
@@ -2524,8 +3071,8 @@ def _phrase_groupe(rows):
             noms.append(n)
     suj = _sujet_court(rows[0][5]) or "le même sujet"
     action = ""
-    for de, tache, res, ech, dm, sujet in rows:
-        action = (tache or res or "").strip().rstrip(".")
+    for r in rows:
+        action = (r[1] or r[2] or "").strip().rstrip(".")
         if action:
             break
     base = f"Sur « {suj} », {len(rows)} messages de {_lister_noms(noms)}"
@@ -2533,68 +3080,155 @@ def _phrase_groupe(rows):
         base += f", pour l'essentiel : {action}"
     ep = _echeance_proche([r[3] for r in rows])
     if ep:
-        base += f", à traiter pour {ep}"
+        base += f", pour {ep}"
     return base + "."
 
 
-def construire_script_topo(db, par_case=5):
-    """Construit (résumé 30 s, script complet) du topo, en français parlé naturel."""
-    cx = sqlite3.connect(db)
-    annee = datetime.now().year
-    aujourdhui = datetime.now().strftime("%Y-%m-%d")
+_CASES_TOPO = ("maintenant", "cette_semaine", "ce_mois")
 
-    def cnt(pression):
-        return cx.execute(
-            "SELECT COUNT(*) FROM messages WHERE etat IS NULL AND ia_source IS NOT NULL "
-            "AND case_topo=? AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0",
-            (pression,)).fetchone()[0]
 
-    n_now, n_week, n_month = cnt("maintenant"), cnt("cette_semaine"), cnt("ce_mois")
-    n_susp = cx.execute("SELECT COUNT(*) FROM messages WHERE etat IS NULL AND suspect=1").fetchone()[0]
+def elements_topo(cx, cfg):
+    """Matière du topo, IDENTIQUE pour la rédaction par l'IA et pour le gabarit local.
 
-    resume = (f"Bonjour. Ce matin, vous avez {n_now} chose"
-              f"{'s' if n_now > 1 else ''} à traiter tout de suite, "
-              f"{n_week} pour cette semaine, et {n_month} à ne pas oublier d'ici la fin du mois.")
-    if n_susp:
-        resume += (f" J'ai aussi mis de côté {n_susp} message{'s' if n_susp > 1 else ''} "
-                   f"suspect{'s' if n_susp > 1 else ''}, à vérifier, que je ne lis pas à voix haute.")
+    - messages non traités de la fenêtre récente (topo_fenetre_jours), plus ceux, plus
+      anciens, dont l'échéance n'est pas dépassée de plus d'une semaine ;
+    - case recalculée à la date du jour ; tri : case, puis urgence, puis « à moi »,
+      puis échéance, puis le plus récent ;
+    - événements d'aujourd'hui et de demain (extension 'evenement'), quel que soit
+      l'âge du mail qui les annonçait ;
+    - jamais les messages suspects ni la masse non importante.
+    """
+    maintenant = datetime.now()
+    auj = maintenant.strftime("%Y-%m-%d")
+    demain = (maintenant + timedelta(days=1)).strftime("%Y-%m-%d")
+    fen = int(cfg.get("topo_jours") or PARAMS.get("topo_fenetre_jours", 14))
+    plancher = (datetime.now(timezone.utc) - timedelta(days=fen)).isoformat()
+    ech_min = (maintenant - timedelta(days=7)).strftime("%Y-%m-%d")
+    cols = ["message_id", "de_adresse", "sujet", "date_mail", "ia_source", "ia_urgence",
+            "ia_echeance", "ia_action", "ia_tache", "ia_resume", "ia_justification",
+            "ia_question", "ia_categorie", "ia_extensions", "urgence", "pour_moi",
+            "important", "suspect"]
+    base = ("SELECT " + ", ".join(cols) + " FROM messages WHERE etat IS NULL "
+            "AND categorie IS NOT NULL AND NOT " + _SQL_MASSE)
+    rows = cx.execute(
+        base + " AND (date_mail >= ? OR (ia_echeance IS NOT NULL AND ia_echeance != 'aucune' "
+               "AND ia_echeance >= ?) OR ia_extensions LIKE ? OR ia_extensions LIKE ?) "
+               "ORDER BY date_mail DESC",
+        (plancher, ech_min, f'%"date": "{auj}"%', f'%"date": "{demain}"%')).fetchall()
 
+    elements, evenements, n_susp = [], [], 0
+    for r in rows:
+        m = dict(zip(cols, r))
+        juge = _juge_par_ia(m["ia_source"]) and bool(m["ia_urgence"])
+        if m["suspect"] == 1 or (juge and m["ia_categorie"] == "hameconnage"):
+            n_susp += 1
+            continue
+        ext = _ext_json(m["ia_extensions"]) if juge else {}
+        ech = m["ia_echeance"] if (juge and m["ia_echeance"] not in (None, "", "aucune")) else None
+        e = {
+            "id": m["message_id"], "de": m["de_adresse"], "nom": _nom_affiche(m["de_adresse"]),
+            "sujet": m["sujet"] or "", "date": m["date_mail"], "juge": juge,
+            "urgence": m["ia_urgence"] if juge else (m["urgence"] or "normale"),
+            "tache": m["ia_tache"] if juge else None,
+            "resume": m["ia_resume"] if juge else None,
+            "pourquoi": m["ia_justification"] if juge else None,
+            "question": m["ia_question"] if juge else None,
+            "echeance": ech, "retard": bool(ech and ech < auj),
+            "pour_moi": m["pour_moi"], "concerne": ext.get("concerne"),
+            "case": case_du_jour(m, auj),
+        }
+        ev = ext.get("evenement")
+        if isinstance(ev, dict) and ev.get("date") in (auj, demain) and not ev.get("annule"):
+            jour = "aujourd'hui" if ev["date"] == auj else "demain"
+            evenements.append({
+                "jour": jour, "date": ev["date"], "heure": ev.get("heure") or "",
+                "lieu": ev.get("lieu") or "", "nom": e["nom"],
+                "quoi": e["tache"] or e["resume"] or _sujet_court(e["sujet"]),
+                "quand": jour + (f" à {ev['heure']}" if ev.get("heure") else ""),
+            })
+        recent = (m["date_mail"] or "") >= plancher
+        if e["case"] in _CASES_TOPO and (recent or (ech and ech >= ech_min)):
+            elements.append(e)
+
+    rang_case = {c: i for i, c in enumerate(_CASES_TOPO)}
+
+    def cle(e):
+        d = _dt_message(e["date"])
+        if d is not None and d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (rang_case[e["case"]], NIVEAU_RANG.get(e["urgence"], 2),
+                0 if e["pour_moi"] == 1 else 1, e["echeance"] or "9999-99-99",
+                -(d.timestamp() if d else 0))
+    elements.sort(key=cle)
+    evenements.sort(key=lambda v: (v["date"], v["heure"] or "99:99"))
+    anciens = cx.execute(
+        "SELECT COUNT(*) FROM messages WHERE etat IS NULL AND date_mail < ? "
+        "AND COALESCE(suspect,0)=0 AND ia_source IS NOT NULL AND ia_source != 'erreur' "
+        "AND ia_action=1 AND ia_urgence IN ('critique','haute','normale')",
+        (plancher,)).fetchone()[0]
+    compte = {c: sum(1 for e in elements if e["case"] == c) for c in _CASES_TOPO}
+    return {"elements": elements, "evenements": evenements, "compte": compte,
+            "suspects": n_susp, "anciens": anciens, "aujourdhui": auj}
+
+
+def _heure_dite(hhmm):
+    try:
+        h, mn = (int(x) for x in hhmm.split(":"))
+    except Exception:
+        return hhmm or ""
+    base = "midi" if (h, mn) == (12, 0) else ("1 heure" if h == 1 else f"{h} heures")
+    return base if mn == 0 or (h, mn) == (12, 0) else f"{base} {mn}"
+
+
+def script_topo_gabarit(t, par_case=5):
+    """Topo rédigé SANS IA (hors ligne, mode bouchon, panne) : mêmes éléments, même
+    ordre, phrases construites par gabarit. Renvoie (court, complet)."""
+    c = t["compte"]
+    n_now, n_week, n_month = c["maintenant"], c["cette_semaine"], c["ce_mois"]
+    if not (n_now or n_week or n_month):
+        resume = "Bonjour. Rien ne demande votre attention dans les messages récents."
+    else:
+        resume = (f"Bonjour. Vous avez {n_now} sujet{'s' if n_now > 1 else ''} à traiter "
+                  f"aujourd'hui, {n_week} pour cette semaine, et {n_month} à ne pas oublier "
+                  f"d'ici la fin du mois.")
+        tetes = [e for e in t["elements"] if e["case"] == "maintenant"][:2]
+        if tetes:
+            resume += " En priorité : " + " ; ".join(
+                f"{e['nom']}, {(e['tache'] or e['resume'] or _sujet_court(e['sujet'])).rstrip('.')}"
+                for e in tetes) + "."
+    if t["suspects"]:
+        n = t["suspects"]
+        resume += (f" J'ai mis de côté {n} message{'s' if n > 1 else ''} "
+                   f"suspect{'s' if n > 1 else ''}, à vérifier, que je ne lis pas.")
     lignes = [resume, ""]
 
-    # Rendez-vous et échéances tombant aujourd'hui — annoncés en premier.
-    rdv = cx.execute(
-        "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail FROM messages "
-        "WHERE etat IS NULL AND ia_source IS NOT NULL AND COALESCE(suspect,0)=0 "
-        "AND (ia_echeance=? OR ia_categorie IN ('rendez_vous','reunion','agenda')) "
-        "ORDER BY date_mail DESC LIMIT ?", (aujourdhui, par_case)).fetchall()
-    if rdv:
-        lignes.append("Commençons par vos rendez-vous et vos échéances du jour.")
-        for de, tache, res, ech, dm in rdv:
-            quoi = (tache or res or "un rendez-vous").strip().rstrip(".")
-            lignes.append(f"Avec {_nom_affiche(de)} : {quoi}.")
+    if t["evenements"]:
+        lignes.append("D'abord, votre agenda.")
+        for ev in t["evenements"]:
+            quand = ev["jour"].capitalize() + (f" à {_heure_dite(ev['heure'])}" if ev["heure"] else "")
+            ou = f", {ev['lieu']}" if ev["lieu"] else ""
+            lignes.append(f"{quand} : {ev['quoi'].rstrip('.')}{ou}. Annoncé par {ev['nom']}.")
         lignes.append("")
 
-    sections = [
-        ("maintenant", "Voici ce qui demande une action maintenant."),
-        ("cette_semaine", "Pour cette semaine, à présent."),
-        ("ce_mois", "Et à garder en tête d'ici la fin du mois."),
-    ]
-    for pression, intro in sections:
-        rows = cx.execute(
-            "SELECT de_adresse, ia_tache, ia_resume, ia_echeance, date_mail, sujet FROM messages "
-            "WHERE etat IS NULL AND ia_source IS NOT NULL AND case_topo=? "
-            "AND COALESCE(ia_action,1)=1 AND COALESCE(suspect,0)=0 "
-            "ORDER BY date_mail DESC LIMIT 80", (pression,)).fetchall()
-        if not rows:
+    intros = {"maintenant": "Voici ce qui demande une action aujourd'hui.",
+              "cette_semaine": "Pour cette semaine.",
+              "ce_mois": "Et à garder en tête d'ici la fin du mois."}
+    for case in _CASES_TOPO:
+        els = [e for e in t["elements"] if e["case"] == case]
+        if not els:
             continue
-        groupes = _grouper_fils(rows)
-        lignes.append(intro)
+        rows = [(e["de"], e["tache"], e["resume"], e["echeance"], e["date"], e["sujet"], e)
+                for e in els]
+        groupes = _grouper_fils(rows)     # l'ordre d'entrée (le plus pressant d'abord) est gardé
+        lignes.append(intros[case])
         maxg = max(par_case, 6)
         for g in groupes[:maxg]:
             gr = g["rows"]
             if len(gr) == 1:
-                de, tache, res, ech, dm, sujet = gr[0]
-                lignes.append(_phrase_message(de, tache, res, ech, dm, annee))
+                e = gr[0][6]
+                lignes.append(_phrase_message(
+                    e["de"], e["tache"], e["resume"], e["echeance"], e["date"],
+                    sujet=e["sujet"], pourquoi=e["pourquoi"] if case == "maintenant" else None))
             else:
                 lignes.append(_phrase_groupe(gr))
         if len(groupes) > maxg:
@@ -2602,9 +3236,135 @@ def construire_script_topo(db, par_case=5):
             lignes.append(f"Et {reste} autre sujet{'s' if reste > 1 else ''}, "
                           f"à voir dans le cockpit.")
         lignes.append("")
-    lignes.append("Voilà pour l'essentiel. Je vous souhaite une bonne journée.")
-    cx.close()
+    if t["anciens"]:
+        n = t["anciens"]
+        lignes.append(f"Il reste aussi {n} sujet{'s' if n > 1 else ''} plus ancien"
+                      f"{'s' if n > 1 else ''} encore ouvert{'s' if n > 1 else ''}, "
+                      f"à voir dans le cockpit.")
+    lignes.append("Voilà pour l'essentiel. Bonne journée.")
     return resume, "\n".join(lignes).strip()
+
+
+def entree_topo_ia(t):
+    """Message envoyé à l'IA pour rédiger le topo (format décrit dans moteur/README.md)."""
+    lim = int(PARAMS.get("topo_elements_max", 40))
+    L = ["DATE DU JOUR : " + _date_du_jour_txt(t["aujourdhui"]), "",
+         "ÉVÉNEMENTS D'AUJOURD'HUI ET DE DEMAIN :"]
+    if t["evenements"]:
+        for ev in t["evenements"]:
+            L.append(f"- {ev['quand']} — {ev['quoi']}"
+                     + (f" — lieu : {ev['lieu']}" if ev["lieu"] else "")
+                     + f" — annoncé par {ev['nom']}")
+    else:
+        L.append("(aucun)")
+    L += ["", "MESSAGES À TRAITER, du plus pressant au moins pressant :"]
+    titres = {"maintenant": "MAINTENANT", "cette_semaine": "CETTE SEMAINE", "ce_mois": "CE MOIS"}
+    montres, case_courante = 0, None
+    for e in t["elements"][:lim]:
+        if e["case"] != case_courante:
+            case_courante = e["case"]
+            L.append(f"[{titres[case_courante]}]")
+        montres += 1
+        qui = {1: "adressé à la personne", 0: "en copie"}.get(e["pour_moi"], "diffusion")
+        if e.get("concerne") == "autre":
+            qui += ", action attendue de quelqu'un d'autre"
+        L.append(f"{montres}. De : {e['nom']} — reçu {_recu_parle(e['date']) or '?'} — "
+                 f"urgence {e['urgence']} — {qui}")
+        L.append(f"   Objet : {_sujet_court(e['sujet'])}")
+        if e["tache"]:
+            L.append(f"   Tâche : {e['tache']}")
+        if e["resume"]:
+            L.append(f"   Résumé : {e['resume']}")
+        if e["pourquoi"]:
+            L.append(f"   Pourquoi : {e['pourquoi']}")
+        if e["echeance"]:
+            L.append(f"   Échéance : {e['echeance']} ({_echeance_parlee(e['echeance'])})")
+        if e["question"]:
+            L.append(f"   Question en suspens : {e['question']}")
+        if not e["juge"]:
+            L.append("   (pas encore jugé par l'IA : classé par les règles, seul l'objet est connu)")
+    if not montres:
+        L.append("(aucun)")
+    c = t["compte"]
+    L += ["", f"CHIFFRES : {c['maintenant']} à traiter maintenant, {c['cette_semaine']} cette "
+              f"semaine, {c['ce_mois']} ce mois ; {max(0, len(t['elements']) - montres)} non "
+              f"détaillés ci-dessus ; {t['suspects']} message(s) suspect(s) mis de côté ; "
+              f"{t['anciens']} sujet(s) plus ancien(s) encore ouvert(s)."]
+    return "\n".join(L)
+
+
+def _nettoyer_parle(texte):
+    """Retire ce qu'une voix lit mal : liens, adresses, symboles de mise en forme."""
+    t = re.sub(r"https?://\S+|www\.\S+", "", texte or "")
+    t = re.sub(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b", "", t)
+    t = re.sub(r"[*_#`>|]+", "", t)
+    t = re.sub(r"^\s*[-•]\s+", "", t, flags=re.M)
+    t = re.sub(r"[ \t]+", " ", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def rediger_topo_ia(cfg, t, cx=None):
+    """Fait RÉDIGER le topo par l'IA à partir des jugements (moteur/topo.txt).
+    Renvoie (court, complet) ou None (pas d'IA, pas de matière, réponse inutilisable) :
+    l'appelant retombe alors sur le gabarit local. Seuls des résumés déjà produits
+    partent chez le fournisseur IA ; la voix reste locale. Mis en cache : réécouter le
+    même topo ne coûte rien."""
+    cfg_ia = _config_ia(cfg)
+    if (not cfg.get("topo_ia", True) or cfg_ia.get("fournisseur", "mock") == "mock"
+            or not cfg_ia.get("cle")):
+        return None
+    if not (t["elements"] or t["evenements"]):
+        return None
+    gabarit = _charger_gabarit(cfg, "topo.txt")
+    if not gabarit:
+        return None
+    systeme = _rendre_gabarit(gabarit, {"utilisateur": _utilisateur_txt(cfg)})
+    entree = entree_topo_ia(t)
+    cle = hashlib.sha256((systeme + "\x00" + entree).encode("utf-8")).hexdigest()
+    if cx is not None:
+        r = cx.execute("SELECT court, complet FROM topo_cache WHERE cle=?", (cle,)).fetchone()
+        if r:
+            return r[0], r[1]
+    try:
+        res = _extraire_json(appeler_mistral(
+            cfg_ia, systeme, entree, modele=cfg_ia.get("modele_topo") or None, temperature=0.3))
+        court = _nettoyer_parle(res.get("court") if isinstance(res, dict) else "")
+        complet = _nettoyer_parle(res.get("complet") if isinstance(res, dict) else "")
+    except Exception as e:
+        print(f"[{NOM}] topo IA indisponible ({e}) : gabarit local.", file=sys.stderr)
+        return None
+    if not (20 <= len(court) <= 1200 and 40 <= len(complet) <= 6000):
+        print(f"[{NOM}] topo IA hors gabarit (longueurs {len(court)}/{len(complet)}) : "
+              f"gabarit local.", file=sys.stderr)
+        return None
+    if t["suspects"] and "suspect" not in complet.lower():
+        n = t["suspects"]
+        complet += (f"\n\nJ'ai aussi mis de côté {n} message{'s' if n > 1 else ''} "
+                    f"suspect{'s' if n > 1 else ''}, à vérifier.")
+    if cx is not None:
+        cx.execute("DELETE FROM topo_cache WHERE at < ?",
+                   ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),))
+        cx.execute("INSERT OR REPLACE INTO topo_cache (cle, court, complet, at) VALUES (?,?,?,?)",
+                   (cle, court, complet, datetime.now(timezone.utc).isoformat()))
+        cx.commit()
+    return court, complet
+
+
+def construire_script_topo(cfg, par_case=5, utiliser_ia=True):
+    """Renvoie (résumé 30 s, script complet, source) ; source = 'ia' ou 'gabarit'."""
+    charger_moteur(cfg)
+    cx = connexion(cfg["base_sqlite"])
+    _assurer_colonnes(cx)
+    try:
+        t = elements_topo(cx, cfg)
+        if utiliser_ia:
+            redige = rediger_topo_ia(cfg, t, cx)
+            if redige:
+                return redige[0], redige[1], "ia"
+        court, complet = script_topo_gabarit(t, par_case)
+        return court, complet, "gabarit"
+    finally:
+        cx.close()
 
 
 def generer_audio(texte, cfg, sortie):
@@ -2642,7 +3402,9 @@ def generer_audio(texte, cfg, sortie):
 
 def cmd_topo_audio(args):
     cfg = charger_config(args.config)
-    court, complet = construire_script_topo(cfg["base_sqlite"], args.par_case)
+    court, complet, source = construire_script_topo(
+        cfg, args.par_case, utiliser_ia=not getattr(args, "sans_ia", False))
+    print(f"[{NOM}] topo " + ("rédigé par l'IA" if source == "ia" else "construit par gabarit local"))
     print("=== Topo (30 secondes) ===\n" + court + "\n")
     print("=== Script complet ===\n" + complet + "\n")
     sortie = args.sortie or str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
@@ -2808,6 +3570,8 @@ def main(argv=None):
     s = sub.add_parser("topo-audio", help="génère le topo du matin en audio (voix locale)")
     s.add_argument("--par-case", type=int, default=5, dest="par_case")
     s.add_argument("--sortie", default=None, help="chemin du fichier audio")
+    s.add_argument("--sans-ia", action="store_true", dest="sans_ia",
+                   help="ne pas faire rédiger le topo par l'IA (gabarit local, sans coût)")
     s.set_defaults(func=cmd_topo_audio)
 
     s = sub.add_parser("suggerer-adresses", help="propose tes adresses pour 'mes_adresses'")
