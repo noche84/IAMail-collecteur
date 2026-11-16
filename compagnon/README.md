@@ -203,3 +203,27 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
   de l'historique se fera soit par lots, soit par lecture directe du stockage
   local de Thunderbird — étape suivante.
 - Pas encore de synchro GesEnt : prochaine brique, sur la même base.
+
+## Nouveautés 1.18 — moteur 2.2 (pertinence)
+
+- **Pour qui l'IA trie** : cockpit → ⚙ Réglages (nom, fonction, « ce qui compte pour
+  toi », tes adresses). Ce texte est joint à chaque mail envoyé à l'IA. Après l'avoir
+  rempli, « Enregistrer et rejuger les 14 derniers jours » (300 messages au plus), ou
+  `analyser-ia --retout --jours 14`.
+- **Topo rédigé par l'IA** (`moteur/topo.txt`) à partir des jugements, classé par
+  importance ; repli automatique sur un gabarit local (hors ligne, `--sans-ia`,
+  mode bouchon). `ia.modele_topo` permet un modèle plus grand pour ce seul appel.
+- **Corrections** : ▲ ▼ « Pas pour moi » sur chaque carte. Appliquées tout de suite,
+  jamais rejugées d'office, et servies en exemple à l'IA pour les messages semblables.
+- **Rien n'est enterré** : IA en panne ou réponse rejetée → le mail reste à sa place,
+  rangé par les règles (badge « tri par les règles » / « IA en attente ») ; le
+  courrier de masse a sa vue « Masse » ; la case est recalculée chaque jour ; les
+  événements du jour et de demain ont leur section « Agenda ».
+- **Sécurité** : le serveur local n'accepte plus que le cockpit et l'extension
+  Thunderbird (contrôle de l'en-tête `Host` et de l'origine).
+- **Message-ID** au format du moteur (sans chevrons, `synth-…`) ; les archives
+  existantes sont migrées à l'ouverture de la base, sans réimport.
+
+Tests : `python3 -I compagnon/tests/test_pertinence.py` et
+`python3 -I moteur/tests/run_conformance.py`.
+

@@ -1,0 +1,18 @@
+{
+  "_commentaire": "Extension 'portee' du moteur de tri (2.2) : l'IA dit à QUI revient la suite. Sert à distinguer « c'est à moi d'agir » de « je suis seulement informé » (patrons et chefs mis en copie, boîtes partagées). Activée par configuration du harnais ; le compagnon IAMail l'active toujours.",
+  "nom": "portee",
+  "consigne": "- PORTÉE : dans \"concerne\", dis à qui revient la suite : \"moi\" si c'est au destinataire d'agir, de décider ou de répondre lui-même ; \"autre\" si c'est à quelqu'un d'autre (le destinataire est informé, en copie, ou le sujet relève d'un autre service) ; \"collectif\" si le message s'adresse à un groupe sans responsable désigné. Avec \"autre\", action_attendue est false, sauf si le destinataire doit transmettre ou trancher.",
+  "format": "\"concerne\": \"moi|autre|collectif\"",
+  "proprietes": {
+    "concerne": {
+      "enum": [
+        "moi",
+        "autre",
+        "collectif"
+      ]
+    }
+  },
+  "requis": [
+    "concerne"
+  ]
+}

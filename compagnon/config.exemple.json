@@ -11,19 +11,31 @@
     "/home/asus/.var/app/org.mozilla.thunderbird_esr/.thunderbird/kb7fqa9k.default-esr/ImapMail/imap.gmail.com/INBOX"
   ],
   "mes_adresses": [],
+  "_mes_adresses_note": "TES adresses, alias compris : sans elles, impossible de distinguer « à moi » de « en copie » (réglable dans le cockpit, ⚙ Réglages).",
+  "utilisateur": {
+    "nom": "",
+    "fonction": "",
+    "profil": ""
+  },
+  "_utilisateur_note": "Pour QUI l'IA trie (moteur 2.2) : ta fonction, puis en texte libre tes responsabilités, ce qui est urgent pour toi, les personnes prioritaires, ce qui ne te concerne pas. Se remplit dans le cockpit (⚙ Réglages).",
   "expediteurs_importants": [],
   "moteur_dir": "",
   "ia_jours": 0,
   "ia_extrait_max": 4000,
   "_ia_extrait_max_note": "nb max de caractères du corps envoyés à l'IA (0 = objet seul ; 4000 = défaut moteur 2.0 ; 8000+ ≈ corps complet). Plus grand = jugements plus fins mais plus de tokens.",
   "extensions": [],
-  "_extensions_note": "extensions du moteur à activer (donnée, pas code) : [] = aucune (standalone). GesEnt active p.ex. [\"action\",\"chantier\"].",
+  "_extensions_note": "extensions du moteur à activer EN PLUS de 'evenement' et 'portee', que le compagnon active toujours. GesEnt active p.ex. [\"action\",\"chantier\"].",
   "ia": {
     "fournisseur": "mock",
     "endpoint": "https://api.mistral.ai/v1/chat/completions",
     "cle": "",
-    "modele": "mistral-small-latest"
+    "modele": "mistral-small-latest",
+    "modele_topo": ""
   },
+  "_modele_topo_note": "modèle utilisé pour RÉDIGER le topo (vide = le même que 'modele'). Un modèle plus grand ici coûte peu : un seul appel par topo.",
+  "topo_ia": true,
+  "topo_jours": 0,
+  "_topo_note": "topo_ia : true = le topo est rédigé par l'IA (repli automatique sur un gabarit local). topo_jours : fenêtre du topo en jours (0 = valeur du moteur, 14).",
   "tts": {
     "moteur": "espeak-ng",
     "voix": "fr",

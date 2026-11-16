@@ -62,8 +62,46 @@ def construire_eml(v):
     mid = v.get("message_id") or ""
     if mid and not mid.startswith("synth-"):
         m["Message-ID"] = "<" + mid + ">"
+    # En-têtes dont dépend le tri déterministe (courrier de masse, soupçon
+    # d'hameçonnage) : sans eux, sous Outlook, aucune newsletter n'était reconnue par
+    # ses en-têtes et le contrôle Reply-To ≠ From ne se déclenchait jamais.
+    for nom, val in (v.get("entetes") or {}).items():
+        if val and nom not in m:
+            try:
+                m[nom] = val
+            except Exception:
+                pass
     m.set_content(v.get("corps") or "")
     return m.as_bytes()
+
+
+ENTETES_TRI = ("Reply-To", "List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted")
+
+
+def entetes_tri_depuis(brut):
+    """Extrait des en-têtes de transport bruts (PR_TRANSPORT_MESSAGE_HEADERS) ceux que le
+    tri utilise. Pur, testable sans Outlook. Renvoie {} si rien ou illisible."""
+    if not brut:
+        return {}
+    try:
+        from email import message_from_string
+        h = message_from_string(brut)
+    except Exception:
+        return {}
+    out = {}
+    for nom in ENTETES_TRI:
+        val = h.get(nom)
+        if val:
+            out[nom] = " ".join(str(val).split())[:900]
+    return out
+
+
+def est_courrier(classe_message):
+    """Vrai pour un mail (IPM.Note…) ET pour une invitation ou réponse de réunion
+    (IPM.Schedule.Meeting…) : ne pas louper les réunions est le premier besoin.
+    Faux pour le reste (accusés de lecture REPORT.*, tâches, contacts…)."""
+    c = (classe_message or "IPM.Note").upper()
+    return c.startswith("IPM.NOTE") or c.startswith("IPM.SCHEDULE.MEETING")
 
 
 def decisions_retour(rows, categorie=CATEGORIE_TRAITE):
@@ -100,6 +138,13 @@ def disponible():
 
 
 def _namespace():
+    # Le service relève depuis un fil secondaire : COM doit y être initialisé, sinon
+    # Dispatch échoue (« CoInitialize has not been called »). Sans effet si déjà fait.
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
     import win32com.client
     return win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
 
@@ -174,6 +219,7 @@ def lire_mailitem(item):
     return {
         "de_nom": str(getattr(item, "SenderName", "") or ""),
         "de_adresse": de_adresse,
+        "entetes": entetes_tri_depuis(str(_prop(item, PR_TRANSPORT_HEADERS, "") or "")),
         "to": to, "cc": cc, "sujet": sujet, "recu_iso": recu,
         "corps": str(getattr(item, "Body", "") or ""),
         "pieces_jointes": pj,
@@ -205,6 +251,10 @@ def relever(cfg, cx, C, limite=None):
     dest_root = Path(cfg["dossier_destination"])
     max_ex = int(cfg.get("ia_extrait_max", C.PARAMS.get("ia_extrait_max", 4000)))
     vus = {r[0] for r in cx.execute("SELECT message_id FROM messages").fetchall()}
+    # EntryID déjà relevés : on les écarte AVANT de lire l'item (corps, destinataires,
+    # résolution Exchange…), sinon chaque cycle relisait toute la boîte.
+    refs = {r[0] for r in cx.execute(
+        "SELECT source_ref FROM messages WHERE source_ref IS NOT NULL").fetchall()}
     faits, doublons = 0, 0
     import email as _email
     for dossier in _dossiers_a_relever(ns, cfg):
@@ -215,11 +265,12 @@ def relever(cfg, cx, C, limite=None):
             pass
         n = 0
         for item in items:
-            if str(getattr(item, "Class", 43)) not in ("43", "0"):   # 43 = olMail
-                if getattr(item, "MessageClass", "IPM.Note") and \
-                   not str(item.MessageClass).startswith("IPM.Note"):
-                    continue
             try:
+                if not est_courrier(str(getattr(item, "MessageClass", "") or "IPM.Note")):
+                    continue
+                if str(getattr(item, "EntryID", "") or "") in refs:
+                    doublons += 1
+                    continue
                 v = lire_mailitem(item)
             except Exception:
                 continue
