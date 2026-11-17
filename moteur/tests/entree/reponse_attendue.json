@@ -1,0 +1,66 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.3) pour la variable 'reponse_attendue' de entree.txt. Entrée : a (à qui l'affaire a été déléguée : nom affiché, sinon adresse), le (date de la délégation, AAAA-MM-JJ ou horodatage ISO : seuls les 10 premiers caractères comptent), suivi_le (facultatif). Vide si 'a' ou 'le' manque ou est illisible ; 'suivi_le' illisible est omis.",
+  "cas": [
+    {
+      "cas": "vide",
+      "entree": {},
+      "attendu": ""
+    },
+    {
+      "cas": "sans date : rien",
+      "entree": {
+        "a": "Marc Petit"
+      },
+      "attendu": ""
+    },
+    {
+      "cas": "sans destinataire : rien",
+      "entree": {
+        "le": "2026-11-12"
+      },
+      "attendu": ""
+    },
+    {
+      "cas": "simple",
+      "entree": {
+        "a": "Marc Petit",
+        "le": "2026-11-12"
+      },
+      "attendu": "délégué à Marc Petit le 12 novembre 2026"
+    },
+    {
+      "cas": "premier du mois",
+      "entree": {
+        "a": "Julie Martin",
+        "le": "2026-12-01"
+      },
+      "attendu": "délégué à Julie Martin le 1er décembre 2026"
+    },
+    {
+      "cas": "avec suivi",
+      "entree": {
+        "a": "Marc Petit",
+        "le": "2026-11-12",
+        "suivi_le": "2026-11-19"
+      },
+      "attendu": "délégué à Marc Petit le 12 novembre 2026, suivi prévu le 19 novembre 2026"
+    },
+    {
+      "cas": "adresse, espaces et point compactés",
+      "entree": {
+        "a": "  contact@fournisseur.be. ",
+        "le": "2026-11-12T09:30:00+01:00"
+      },
+      "attendu": "délégué à contact@fournisseur.be le 12 novembre 2026"
+    },
+    {
+      "cas": "suivi illisible : omis",
+      "entree": {
+        "a": "Marc Petit",
+        "le": "2026-11-12",
+        "suivi_le": "vendredi"
+      },
+      "attendu": "délégué à Marc Petit le 12 novembre 2026"
+    }
+  ]
+}

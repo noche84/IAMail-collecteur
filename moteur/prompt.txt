@@ -15,6 +15,8 @@ responsabilités, ce qui compte pour elle) ; les niveaux d'urgence de l'entrepri
 nom, définition, délai) ; ses catégories (code, description, urgence
 habituelle) ; ce que l'on sait de l'expéditeur (profil, et s'il est connu de
 l'entreprise) ; une ligne MÉMOIRE si le message appartient à un fil déjà présent ;
+une ligne RÉPONSE ATTENDUE si le message répond à une affaire que le destinataire
+avait déléguée ;
 un pré-classement automatique (à moi / en copie / diffusion ; humain ou
 automatique ; courrier de masse ; important ; soupçon d'hameçonnage) ; les
 signaux d'urgence repérés par mots-clés ; parfois des exemples de messages
@@ -71,6 +73,15 @@ Règles de jugement :
   surtout si certains messages sont déjà importants ou urgents — reste un sujet
   chaud : aligne ce message dessus. Un expéditeur qui RELANCE sans avoir reçu de
   réponse attend, et peut être mécontent.
+
+- RÉPONSE ATTENDUE. Le destinataire avait délégué cette affaire et attendait
+  précisément ce retour : ce n'est ni un premier contact ni une simple
+  information. Le plus souvent, il doit reprendre l'affaire (décider, répondre à
+  la personne qui l'avait sollicité, clôturer) : action_attendue true, et dis dans
+  "tache" ce qu'il doit faire de cette réponse. L'urgence se juge toujours sur le
+  contenu — une réponse attendue n'est pas urgente par nature — mais une réponse
+  qui arrive après la date de suivi prévue, ou qui débloque une échéance proche,
+  pèse davantage.
 
 - LES SIGNAUX ET LE PRÉ-CLASSEMENT SONT DES INDICES. Confirme-les ou écarte-les
   selon le sens réel du message (une négation, une citation d'un ancien message,

@@ -196,6 +196,10 @@ class EntreeIa(Base):
                "date_mail": datetime.now(timezone.utc).isoformat(), "extrait": "Corps"}
         sans = M.construire_entree_ia(self.cfg, row, None, {}, "2026-11-16")
         self.assertNotIn("DESTINATAIRE", sans)
+        self.assertNotIn("RÉPONSE ATTENDUE", sans)
+        avec_ra = M.construire_entree_ia(self.cfg, dict(row, reponse_attendue=M.reponse_attendue_txt(
+            "Marc Petit", "2026-11-12")), None, {}, "2026-11-16")
+        self.assertIn("RÉPONSE ATTENDUE : délégué à Marc Petit le 12 novembre 2026\nPRÉ-CLASSEMENT", avec_ra)
         self.assertIn("DATE DU JOUR : lundi 16 novembre 2026 (2026-11-16)\n\nNIVEAUX", sans)
         self.cfg["utilisateur"] = {"nom": "Arnaud", "fonction": "responsable informatique",
                                    "profil": "Urgent : panne qui bloque plusieurs collègues."}
@@ -231,6 +235,12 @@ class VecteursCommuns(unittest.TestCase):
                 r = M.bloc_destinataire(**c["entree"])
                 self.assertEqual(r, c["attendu"])
                 self.assertLessEqual(len(r), 1500)
+
+    def test_reponse_attendue(self):
+        cas = json.loads((self.DOSSIER / "reponse_attendue.json").read_text(encoding="utf-8"))["cas"]
+        for c in cas:
+            with self.subTest(c["cas"]):
+                self.assertEqual(M.reponse_attendue_txt(**c["entree"]), c["attendu"])
 
     def test_date_du_jour(self):
         for c in json.loads((self.DOSSIER / "date_du_jour.json").read_text(encoding="utf-8"))["cas"]:

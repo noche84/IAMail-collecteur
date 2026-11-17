@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.18.1"
+VERSION = "1.19.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1703,6 +1703,30 @@ def _utilisateur_txt(cfg):
     return bloc_destinataire(u.get("nom"), u.get("fonction"), u.get("profil"), u.get("boite"))
 
 
+def _date_longue(iso):
+    """'12 novembre 2026' / '1er décembre 2026' depuis AAAA-MM-JJ ; '' si illisible."""
+    try:
+        d = datetime.strptime(str(iso or "").strip()[:10], "%Y-%m-%d").date()
+    except Exception:
+        return ""
+    return f"{'1er' if d.day == 1 else d.day} {_MOIS_ENTREE[d.month - 1]} {d.year}"
+
+
+def reponse_attendue_txt(a="", le="", suivi_le=None):
+    """Variable 'reponse_attendue' de entree.txt (moteur 2.3) : le message répond à une
+    affaire que le destinataire avait déléguée avec suivi. Format commun (README) :
+    'délégué à {à qui} le {J} {mois} {AAAA}[, suivi prévu le {J} {mois} {AAAA}]'.
+    Vide si l'un des deux éléments obligatoires manque. Le compagnon ne gère pas
+    encore la délégation : la fonction sert au format commun et à ses vecteurs."""
+    qui = _compacte(a)
+    quand = _date_longue(le)
+    if not (qui and quand):
+        return ""
+    txt = f"délégué à {qui} le {quand}"
+    suivi = _date_longue(suivi_le) if suivi_le else ""
+    return txt + (f", suivi prévu le {suivi}" if suivi else "")
+
+
 def _expediteur_connu_txt(cfg, de):
     """En autonome, la seule chose « connue » est la liste expediteurs_importants."""
     spec = (_adresses_spec(de or "") or [""])[0]
@@ -1896,6 +1920,7 @@ def construire_entree_ia(cfg, row, profil, fils, aujourdhui, attente=None, exemp
         "profil": _profil_en_clair(profil),
         "relances": _relances_txt(row, attente),
         "memoire": _memoire_fil(row, fils),
+        "reponse_attendue": row.get("reponse_attendue") or "",   # pas de délégation en autonome
         "pre_classement": _pre_classement_txt(row),
         "signaux": _signaux_txt(row.get("signaux")),
         "exemples": exemples or "",
@@ -3352,6 +3377,8 @@ def entree_topo_ia(t):
             L.append(f"   Échéance : {e['echeance']} ({_echeance_parlee(e['echeance'])})")
         if e["question"]:
             L.append(f"   Question en suspens : {e['question']}")
+        if e.get("reponse_attendue"):
+            L.append(f"   Réponse attendue : {e['reponse_attendue']}")
         if not e["juge"]:
             L.append("   (pas encore jugé par l'IA : classé par les règles, seul l'objet est connu)")
     if not montres:

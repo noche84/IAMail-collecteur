@@ -64,4 +64,5 @@ Hors jeu `.eml` (les runners ne lisent que `cas/*.eml`) : petits fichiers JSON
 |---|---|
 | `entree/destinataire.json` | variable `utilisateur` (IAMail : `bloc_destinataire()`) |
 | `entree/date_du_jour.json` | variable `date_du_jour` (IAMail : `_date_du_jour_txt()`) |
+| `entree/reponse_attendue.json` | variable `reponse_attendue` (IAMail : `reponse_attendue_txt()`, 2.3) |
 

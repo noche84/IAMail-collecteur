@@ -65,6 +65,7 @@ PHP du brief GesEnt).
 | `expediteur_connu` | facultatif : GesEnt — contact ou fiche reconnus, ex. `client Dupont SRL` ; IAMail — `dans la liste des expéditeurs importants du destinataire` si c'est le cas |
 | `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif — vide si n = 0 |
 | `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. **Règle commune (2.2.1)** : k = messages du **même expéditeur** (adresse, minuscules), du **même fil** (identifiant de fil du client s'il existe, sinon clé de fil normalisée), reçus **avant** le message jugé et depuis moins de `relance_fenetre_jours`, **encore à traiter** (ni traités, ni reportés), hors courrier de masse. Le comptage de tous les messages de l'expéditeur (ancienne règle GesEnt) est abandonné : le statut « traité » n'est pas assez fiable pour lui |
+| `reponse_attendue` | facultatif (2.3) : le message **répond à une affaire déléguée** par le destinataire. `délégué à {à qui} le {J} {mois} {AAAA}`, suivi éventuellement de `, suivi prévu le {J} {mois} {AAAA}` — `1er` pour le premier du mois, mois en minuscules ; `{à qui}` = nom affiché, sinon adresse, compacté. Fourni par le harnais quand il juge la réponse d'un tiers (ou d'un collègue) sur une délégation **avec suivi**. Vide → la ligne disparaît. Vecteurs : `tests/entree/reponse_attendue.json`. IAMail ne gère pas encore la délégation : toujours vide |
 | `memoire` | facultatif : `fil « {sujet} » : {autres} autre(s) message(s) sur ce sujet, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` (sans la fin si chauds = 0) — vide s'il n'y a aucun autre message. **2.2** : on ne compte que les AUTRES messages du fil (jamais celui que l'on juge), reçus depuis moins de `fil_fenetre_jours` ; « chaud » = `important` OU urgence retenue (IA, sinon règles) `critique`/`haute` |
 | `pre_classement` | éléments joints par `, ` dans cet ordre : `à moi` / `en copie` / `diffusion` ; `expéditeur humain` / `expéditeur automatique` ; `courrier de masse` si bulk ; `marqué important` si important ; `soupçon d'hameçonnage (Reply-To d'un autre domaine)` si suspect |
 | `signaux` | `aucun`, ou pour chaque signal : `« {expression} » ({niveau}, monte)` / `(…, baisse)` / `(…, monte — ignoré : expéditeur automatique ou masse)`, joints par `, ` |
@@ -144,6 +145,7 @@ MESSAGES À TRAITER, du plus pressant au moins pressant :
    Pourquoi : …
    Échéance : AAAA-MM-JJ ({aujourd'hui|demain|…})
    Question en suspens : …
+   Réponse attendue : délégué à {à qui} le {date}   (2.3 ; omise si vide)
 [CETTE SEMAINE] …
 [CE MOIS] …
 
@@ -155,7 +157,9 @@ CHIFFRES : …
   de 7 jours) ; `topo_elements_max` au plus. La **case est recalculée à la date du
   jour** (`regles.topo`), jamais relue telle que stockée le jour du jugement.
 - Ordre : case, puis urgence (critique d'abord), puis « à moi », puis échéance, puis
-  le plus récent.
+  le plus récent. Le harnais ne relève pas l'urgence d'une réponse attendue (décision
+  du 17/11 : l'urgence se juge sur le contenu) ; c'est `topo.txt` qui la fait annoncer
+  en tête.
 - Réponse : `{"court": "...", "complet": "..."}`. Le harnais retire liens, adresses
   et symboles, vérifie les longueurs, et **retombe sur un gabarit local** (mêmes
   éléments, même ordre) en cas de panne, de réponse inutilisable ou sans IA.
