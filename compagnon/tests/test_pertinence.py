@@ -219,6 +219,48 @@ class EntreeIa(Base):
         self.assertFalse(ok)
 
 
+class VecteursCommuns(unittest.TestCase):
+    """Les mêmes fichiers que GesEnt : moteur/tests/entree/*.json."""
+    DOSSIER = ICI.parent.parent / "moteur" / "tests" / "entree"
+
+    def test_bloc_destinataire(self):
+        cas = json.loads((self.DOSSIER / "destinataire.json").read_text(encoding="utf-8"))["cas"]
+        self.assertGreaterEqual(len(cas), 10)
+        for c in cas:
+            with self.subTest(c["cas"]):
+                r = M.bloc_destinataire(**c["entree"])
+                self.assertEqual(r, c["attendu"])
+                self.assertLessEqual(len(r), 1500)
+
+    def test_date_du_jour(self):
+        for c in json.loads((self.DOSSIER / "date_du_jour.json").read_text(encoding="utf-8"))["cas"]:
+            with self.subTest(c["date"]):
+                self.assertEqual(M._date_du_jour_txt(c["date"]), c["attendu"])
+
+
+class Rejugement(Base):
+    def test_profil_modifie_propose_sans_appeler_l_ia(self):
+        appels = []
+        M.appeler_mistral = lambda *a, **k: appels.append(1) or json.dumps(BON)
+        M.enregistrer_reglages(self.cfg, {"utilisateur": {"fonction": "Informatique"},
+                                          "mes_adresses": ["moi@ccl.be"]})
+        self.assertEqual(appels, [])
+        self.assertTrue(any("profil a changé" in a for a in M.alertes_reglages(self.cfg)))
+        M.enregistrer_reglages(self.cfg, {"utilisateur": {"fonction": "Informatique"},
+                                          "mes_adresses": ["moi@ccl.be"]})
+        M._effacer_profil_a_rejuger(self.cfg)
+        self.assertFalse(any("profil a changé" in a for a in M.alertes_reglages(self.cfg)))
+        self.assertNotIn("profil_a_rejuger", json.loads(self.cfg_path.read_text(encoding="utf-8")))
+
+    def test_estimation_exclut_corrections_et_masse(self):
+        self.ins("a1"); self.juge("a1")
+        self.ins("a2"); self.juge("a2"); M.corriger_jugement(self.cx, "a2", "plus")
+        self.ins("vieux", jours=30)
+        self.ins("nl", bulk=1, important=0)
+        ids = [r[0] for r in M.selection_ia(self.cx, True, 14, 300)]
+        self.assertEqual(ids, ["a1"])
+
+
 class Corrections(Base):
     def test_correction_appliquee_gardee_et_servie_en_exemple(self):
         self.ins("c1", sujet="Rapport hebdo ventes"); self.juge("c1", urgence="haute")
@@ -356,6 +398,8 @@ class Serveur(Base):
         self.assertNotIn("_chemin_config", enregistre)
         self.assertEqual(M._utilisateur_txt(self.cfg), "Arnaud, Informatique. Pannes d'abord.")
         self.assertEqual(self.req("POST", "/api/corriger", {"id": "s1", "quoi": "plus"})[0], 200)
+        st, _, b = self.req("POST", "/api/rejuger", {"jours": 14, "compter": True})
+        self.assertEqual((st, json.loads(b)["n"], json.loads(b)["max"]), (200, 0, 300))
         self.assertEqual(self.cx.execute("SELECT ia_urgence FROM messages").fetchone()[0], "haute")
 
 

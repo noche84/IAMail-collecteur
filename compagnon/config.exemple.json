@@ -15,9 +15,10 @@
   "utilisateur": {
     "nom": "",
     "fonction": "",
-    "profil": ""
+    "profil": "",
+    "boite": ""
   },
-  "_utilisateur_note": "Pour QUI l'IA trie (moteur 2.2) : ta fonction, puis en texte libre tes responsabilités, ce qui est urgent pour toi, les personnes prioritaires, ce qui ne te concerne pas. Se remplit dans le cockpit (⚙ Réglages).",
+  "_utilisateur_note": "Pour QUI l'IA trie (moteur 2.2) : ta fonction, puis en texte libre tes responsabilités, ce qui est urgent pour toi, les personnes prioritaires, ce qui ne te concerne pas. Se remplit dans le cockpit (⚙ Réglages). 'boite' (facultatif, config seulement) : ce que reçoit cette boîte en plus de toi (alertes, listes…) ; passe après ton profil.",
   "expediteurs_importants": [],
   "moteur_dir": "",
   "ia_jours": 0,

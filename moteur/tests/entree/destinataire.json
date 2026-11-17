@@ -1,0 +1,95 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.2.1) pour la variable 'utilisateur' de entree.txt. Chaque harnais doit produire 'attendu' à partir de 'entree' (nom, fonction, profil, boite ; clés absentes = vides). Longueurs en caractères (points de code). Règle : moteur/README.md.",
+  "cas": [
+    {
+      "cas": "vide",
+      "entree": {},
+      "attendu": "",
+      "longueur": 0
+    },
+    {
+      "cas": "nom seul",
+      "entree": {
+        "nom": "Arnaud"
+      },
+      "attendu": "Arnaud.",
+      "longueur": 7
+    },
+    {
+      "cas": "nom et fonction",
+      "entree": {
+        "nom": "Arnaud",
+        "fonction": "responsable informatique"
+      },
+      "attendu": "Arnaud, responsable informatique.",
+      "longueur": 33
+    },
+    {
+      "cas": "espaces et point final compactés",
+      "entree": {
+        "nom": "  Arnaud ",
+        "fonction": "responsable   informatique.",
+        "profil": "Urgent :\n une panne qui bloque\tplusieurs collègues.  "
+      },
+      "attendu": "Arnaud, responsable informatique. Urgent : une panne qui bloque plusieurs collègues.",
+      "longueur": 84
+    },
+    {
+      "cas": "fonction et profil sans nom",
+      "entree": {
+        "fonction": "Comptable",
+        "profil": "Échéances fiscales d'abord"
+      },
+      "attendu": "Comptable. Échéances fiscales d'abord.",
+      "longueur": 38
+    },
+    {
+      "cas": "boîte partagée seule",
+      "entree": {
+        "boite": "Accueil, quatre personnes : inscriptions aux formations et demandes des membres."
+      },
+      "attendu": "Boîte : Accueil, quatre personnes : inscriptions aux formations et demandes des membres.",
+      "longueur": 88
+    },
+    {
+      "cas": "profil puis boîte personnelle",
+      "entree": {
+        "nom": "Arnaud",
+        "fonction": "informatique",
+        "boite": "Boîte personnelle, reçoit aussi les alertes des serveurs"
+      },
+      "attendu": "Arnaud, informatique. Boîte : Boîte personnelle, reçoit aussi les alertes des serveurs.",
+      "longueur": 87
+    },
+    {
+      "cas": "profil trop long : coupé, boîte omise",
+      "entree": {
+        "nom": "Arnaud",
+        "profil": "Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web.",
+        "boite": "Boîte personnelle"
+      },
+      "attendu": "Arnaud. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le site web. Je gère le parc informatique, Microsoft 365 et le s.",
+      "longueur": 1500
+    },
+    {
+      "cas": "boîte coupée à la place restante",
+      "entree": {
+        "nom": "Arnaud",
+        "profil": "Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes.",
+        "boite": "Alertes des serveurs, des sauvegardes et des onduleurs ; demandes des collègues. Alertes des serveurs, des sauvegardes et des onduleurs ; demandes des collègues. Alertes des serveurs, des sauvegardes et des onduleurs ; demandes des collègues. "
+      },
+      "attendu": "Arnaud. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Boîte : Alertes des serveurs, des sauvegardes et des onduleurs ; demandes des collègues. Alertes des serveurs, de.",
+      "longueur": 1500
+    },
+    {
+      "cas": "reste inférieur à 40 : boîte omise",
+      "entree": {
+        "nom": "Arnaud",
+        "profil": "Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Encore quelques mots ici pour approcher la limite exacte.",
+        "boite": "Boîte personnelle avec les alertes des serveurs"
+      },
+      "attendu": "Arnaud. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Responsable du parc, des comptes et des sauvegardes. Encore quelques mots ici pour approcher la limite exacte.",
+      "longueur": 1496
+    }
+  ]
+}
