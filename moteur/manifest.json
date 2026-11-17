@@ -1,7 +1,7 @@
 {
   "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "date": "2026-11-17",
   "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
@@ -17,14 +17,14 @@
     "extensions/portee.json"
   ],
   "sha256": {
-    "prompt.txt": "caea211bc969bf34007b3cd45bda59907ba2922c5efb6f2dc837c37769fee270",
-    "entree.txt": "cce1743a78a6a67a771302c0d363ac7ec91d634546a94b293197ebdd5bc04a7c",
+    "prompt.txt": "314bba17154333213660a56b5b2c69b7c3c00a1b4109cfc799d9f6df5f50998d",
+    "entree.txt": "16bc198712632ad56886ba0aeb72ee7bd6fd5c3f31c2605802907b15a07d68d7",
     "regles.json": "684241dfa624a3b2ebc2a816d76fe6e1aed37f3fad53c3fc21d3ca6528b426dd",
     "taxonomie.json": "39ecd380f7f6ca36bf8b20d8e02e8a6c067c89cda32e548d3725083fefa9855b",
     "sortie.schema.json": "468396b03b48215ddcfbb0b453eb89b79eddb5217b3e0b333edca74cb73b20d0",
     "extensions/action.json": "b9b297370bc5c3742a797bc492f62226f7f1bb682359cff96ef137cbc6b7db99",
     "extensions/chantier.json": "242d51776b342b82a99d6fb1a7839b7f2353032aaebc49a3b9688ae153a9689b",
-    "topo.txt": "f349571aa11ffb7b9df9836e6876ae0359fee76d4e4782bbc437c646ad515737",
+    "topo.txt": "46a16fea7aeba5d099b442279255b34dd9107bea0d51e8e3dbc0f48a4409e624",
     "extensions/evenement.json": "7b3f043bac74cbe714bce8d6ecd9d9becd553902eba618eb0127fc32ae354b36",
     "extensions/portee.json": "b78418fac1b9472d1d5ef9bd45aff7eb66ff298684b42e5b3c4d76524a1349c7"
   },
@@ -51,7 +51,8 @@
     "cas": 29,
     "vecteurs": [
       "tests/entree/destinataire.json",
-      "tests/entree/date_du_jour.json"
+      "tests/entree/date_du_jour.json",
+      "tests/entree/reponse_attendue.json"
     ]
   },
   "rupture_depuis_1x": [
@@ -86,6 +87,11 @@
       "Relances : règle commune « même expéditeur, même fil, messages antérieurs, encore à traiter, hors masse, fenêtre relance_fenetre_jours » ; le comptage de tous les messages de l'expéditeur est abandonné.",
       "Vecteurs communs tests/entree/*.json (destinataire, date du jour) : à passer dans chaque harnais.",
       "Changement de profil : jamais de rejugement automatique ; proposition avec estimation du nombre de messages ; 14 jours, 300 messages, corrections humaines exclues."
+    ],
+    "2.3.0": [
+      "entree.txt : nouvelle variable facultative 'reponse_attendue' (ligne RÉPONSE ATTENDUE après MÉMOIRE), format commun dans le README, vecteurs tests/entree/reponse_attendue.json. Fournie quand le message jugé répond à une délégation avec suivi ; vide sinon (entrée identique à la 2.2.1).",
+      "prompt.txt : règle RÉPONSE ATTENDUE — reprise de l'affaire, action attendue, urgence toujours jugée sur le contenu. Le harnais ne force pas l'urgence.",
+      "topo.txt : ligne facultative « Réponse attendue : … » par message ; ces messages sont annoncés en tête, après l'agenda."
     ]
   },
   "topo": "topo.txt"

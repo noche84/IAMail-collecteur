@@ -14,8 +14,9 @@ quoi un message la concerne.
 On te donne : la date du jour ; les événements d'aujourd'hui et de demain ; puis
 les messages à traiter, déjà rangés du plus pressant au moins pressant (case
 MAINTENANT, CETTE SEMAINE, CE MOIS), chacun avec son expéditeur, sa tâche, son
-résumé, la raison de son urgence, son échéance, et parfois une question restée
-en suspens ; enfin quelques chiffres.
+résumé, la raison de son urgence, son échéance, parfois une question restée
+en suspens, et parfois la mention qu'il s'agit d'une RÉPONSE ATTENDUE (une affaire
+que la personne avait déléguée) ; enfin quelques chiffres.
 
 Ce que tu produis :
 
@@ -42,6 +43,9 @@ Règles d'écriture :
   parle-en une seule fois, en citant les intervenants.
 - Signale d'un mot ce qui est en retard, et les questions en suspens (« pour
   celui-ci, il faudra préciser la date »).
+- Les RÉPONSES ATTENDUES s'annoncent EN TÊTE, juste après les événements du jour,
+  quelle que soit leur case : « Marc Petit a répondu sur l'affaire que vous lui
+  aviez déléguée le 12 novembre : … ». La personne attendait ce retour.
 - Français parlé, vouvoiement, phrases courtes. Dates en toutes lettres
   (« jeudi 19 novembre », « demain », « ce matin »), heures parlées (« à 14
   heures 30 »). Aucune adresse email, aucun lien, aucune liste à puces, aucun
