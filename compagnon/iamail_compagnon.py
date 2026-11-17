@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -1658,17 +1658,49 @@ def _date_du_jour_txt(iso):
     return f"{_JOURS[d.weekday()]} {jour} {_MOIS_ENTREE[d.month - 1]} {d.year} ({iso})"
 
 
+BLOC_DESTINATAIRE_MAX = 1500       # caractères (points de code), point final compris
+BOITE_RESTE_MIN = 40               # en dessous, la description de la boîte est omise
+_BOITE_PREFIXE = "Boîte : "
+
+
+def _compacte(x):
+    """Espaces compactées, espaces et points finaux retirés."""
+    return re.sub(r"\s+", " ", str(x or "")).strip().rstrip(". ")
+
+
+def bloc_destinataire(nom="", fonction="", profil="", boite=""):
+    """Variable 'utilisateur' de entree.txt — règle commune moteur 2.2.1 (README) :
+
+        partie U = « {nom}, {fonction}. {profil} »  (parties vides omises)
+        partie B = description de la boîte
+        bloc     = U + "." | U + ". Boîte : " + B + "." | "Boîte : " + B + "."
+
+    1500 caractères au plus, point final compris. Le profil de l'utilisateur passe
+    d'abord ; la description de la boîte prend la place restante (coupée), et elle
+    est omise s'il reste moins de 40 caractères. Vecteurs : moteur/tests/entree/."""
+    tete = ", ".join(x for x in (_compacte(nom), _compacte(fonction)) if x)
+    u = ". ".join(x for x in (tete, _compacte(profil)) if x)
+    b = _compacte(boite)
+    if len(u) >= BLOC_DESTINATAIRE_MAX:
+        u = u[:BLOC_DESTINATAIRE_MAX - 1].rstrip(" .")
+        return u + "."
+    if b:
+        sep = ". " + _BOITE_PREFIXE if u else _BOITE_PREFIXE
+        reste = BLOC_DESTINATAIRE_MAX - len(u) - len(sep) - 1
+        if reste >= BOITE_RESTE_MIN:
+            b = b[:reste].rstrip(" .")
+            if b:
+                return u + sep + b + "."
+    return (u + ".") if u else ""
+
+
 def _utilisateur_txt(cfg):
-    """Bloc DESTINATAIRE de l'entrée IA : nom, fonction, puis description libre
-    (responsabilités, priorités, ce qui ne le concerne pas). Vide si non renseigné."""
+    """Bloc DESTINATAIRE pour le compagnon : une seule boîte, celle de l'utilisateur ;
+    'utilisateur.boite' (facultatif, config seulement) la décrit."""
     u = cfg.get("utilisateur") or {}
     if isinstance(u, str):
         u = {"profil": u}
-    nom, fonction, profil = (str(u.get(k) or "").strip() for k in ("nom", "fonction", "profil"))
-    tete = ", ".join(x for x in (nom, fonction) if x)
-    txt = ". ".join(x.rstrip(". ") for x in (tete, profil) if x)
-    txt = re.sub(r"\s+", " ", txt).strip()
-    return (txt[:1500].rstrip(". ") + ".") if txt else ""
+    return bloc_destinataire(u.get("nom"), u.get("fonction"), u.get("profil"), u.get("boite"))
 
 
 def _expediteur_connu_txt(cfg, de):
@@ -1977,6 +2009,35 @@ def _config_ia(cfg):
     return cfg_ia
 
 
+COLS_SELECTION_IA = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
+                     "expediteur_humain", "important", "suspect", "categorie", "urgence",
+                     "extrait", "destinataires", "copies", "pieces_jointes", "signaux",
+                     "ia_urgence"]
+
+
+def selection_ia(cx, retout=False, jours=0, limite=None):
+    """Messages qui seraient envoyés à l'IA : classés, jamais corrigés à la main,
+    hors masse non importante (regles.selection_ia), pas encore jugés (sauf retout),
+    reçus depuis 'jours' jours (0 = tous), du plus récent au plus ancien."""
+    params = []
+    filtre_date = ""
+    if jours and jours > 0:
+        filtre_date = " AND date_mail >= ?"
+        params.append((datetime.now(timezone.utc) - timedelta(days=jours)).isoformat())
+    cond_source = "" if retout else "ia_source IS NULL AND "
+    filtre_masse = (" AND (bulk=0 OR important=1)"
+                    if SELECTION_IA.get("ignorer_masse_non_importante", True) else "")
+    sql = ("SELECT " + ", ".join(COLS_SELECTION_IA) + " FROM messages WHERE " + cond_source
+           + "categorie IS NOT NULL AND corrige_at IS NULL"
+           + filtre_masse + filtre_date + " ORDER BY date_mail DESC")
+    if limite:
+        sql += f" LIMIT {int(limite)}"
+    return cx.execute(sql, params).fetchall()
+
+
+REJUGE_JOURS, REJUGE_MAX = 14, 300
+
+
 def cmd_analyser_ia(args):
     cfg = charger_config(args.config)
     moteur_version = charger_moteur(cfg)
@@ -2000,28 +2061,9 @@ def cmd_analyser_ia(args):
         print(f"[{NOM}] ⚠ profil utilisateur vide : l'IA ne sait pas pour qui elle trie "
               f"(cockpit → ⚙ Réglages, ou clé \"utilisateur\" de la config).", file=sys.stderr)
 
-    # Sélection : ce qui mérite l'IA et n'a pas encore été jugé.
     jours = args.jours if args.jours is not None else cfg.get("ia_jours", 0)
-    filtre_date = ""
-    params = []
-    if jours and jours > 0:
-        limite_date = (datetime.now(timezone.utc)).timestamp() - jours * 86400
-        filtre_date = " AND date_mail >= ?"
-        params.append(datetime.fromtimestamp(limite_date, timezone.utc).isoformat())
-    cond_source = "" if getattr(args, "retout", False) else "ia_source IS NULL AND "
-    # Sélection IA : par défaut, on ignore la masse non importante (regles.selection_ia).
-    filtre_masse = (" AND (bulk=0 OR important=1)"
-                    if SELECTION_IA.get("ignorer_masse_non_importante", True) else "")
-    cols = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
-            "expediteur_humain", "important", "suspect", "categorie", "urgence", "extrait",
-            "destinataires", "copies", "pieces_jointes", "signaux", "ia_urgence"]
-    # Un jugement corrigé à la main (cockpit) n'est jamais rejugé d'office.
-    sql = ("SELECT " + ", ".join(cols) + " FROM messages WHERE " + cond_source
-           + "categorie IS NOT NULL AND corrige_at IS NULL"
-           + filtre_masse + filtre_date + " ORDER BY date_mail DESC")
-    if args.limite:
-        sql += f" LIMIT {int(args.limite)}"
-    rows = cx.execute(sql, params).fetchall()
+    cols = COLS_SELECTION_IA
+    rows = selection_ia(cx, getattr(args, "retout", False), jours, args.limite)
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -2407,12 +2449,30 @@ def enregistrer_reglages(cfg, donnees):
         if "@" in a and a not in adresses:
             adresses.append(a)
     change = sorted(adresses) != sorted(a.lower() for a in (cfg.get("mes_adresses") or []))
+    ancien = cfg.get("utilisateur") or {}
+    boite = ancien.get("boite") if isinstance(ancien, dict) else None
+    if boite:
+        util["boite"] = boite             # description de la boîte : config seulement
+    if bloc_destinataire(**util) != _utilisateur_txt(cfg):
+        # Enregistrer n'appelle jamais l'IA : on propose seulement de rejuger.
+        brut["profil_a_rejuger"] = cfg["profil_a_rejuger"] = True
     brut["utilisateur"], brut["mes_adresses"] = util, adresses
     tmp = chemin.with_suffix(chemin.suffix + ".tmp")
     tmp.write_text(json.dumps(brut, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, chemin)
     cfg["utilisateur"], cfg["mes_adresses"] = util, adresses
     return change
+
+
+def _effacer_profil_a_rejuger(cfg):
+    cfg["profil_a_rejuger"] = False
+    chemin = Path(cfg.get("_chemin_config") or "")
+    if chemin.is_file():
+        brut = json.loads(chemin.read_text(encoding="utf-8"))
+        brut.pop("profil_a_rejuger", None)
+        tmp = chemin.with_suffix(chemin.suffix + ".tmp")
+        tmp.write_text(json.dumps(brut, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, chemin)
 
 
 def alertes_reglages(cfg):
@@ -2423,6 +2483,9 @@ def alertes_reglages(cfg):
                    "« à moi » de « en copie », tout est plafonné à « normale ».")
     if not _utilisateur_txt(cfg):
         out.append("Ta fonction n'est pas décrite : l'IA ne sait pas pour qui elle trie.")
+    elif cfg.get("profil_a_rejuger"):
+        out.append("Ton profil a changé : les messages déjà jugés l'ont été avec l'ancien. "
+                   "Rejuge les derniers jours depuis les réglages.")
     cfg_ia = _config_ia(cfg)
     if cfg_ia.get("fournisseur", "mock") == "mock":
         out.append("IA en mode bouchon (« mock ») : aucun vrai jugement, résumés = objets des mails.")
@@ -2591,18 +2654,24 @@ def faire_cockpit_handler(cfg):
                         daemon=True).start()
                 self._json({"ok": True, "alertes": alertes_reglages(cfg)})
             elif self.path == "/api/rejuger":
-                # Rejuge les derniers jours avec le profil courant (appels IA payants,
-                # bornés) — utile juste après avoir décrit sa fonction.
+                # Rejuge les derniers jours avec le profil courant : proposé, jamais
+                # automatique (appels IA payants, bornés ; corrections humaines exclues).
+                jours = max(1, min(60, int(c.get("jours") or REJUGE_JOURS)))
+                if c.get("compter"):
+                    cx = sqlite3.connect(db)
+                    n = len(selection_ia(cx, True, jours, REJUGE_MAX))
+                    cx.close()
+                    return self._json({"ok": True, "jours": jours, "n": n, "max": REJUGE_MAX})
                 if etat_rejuge["en_cours"] or not cfg.get("_chemin_config"):
                     return self._json({"ok": False, "erreur": "déjà en cours"}, 409)
-                jours = max(1, min(60, int(c.get("jours") or 14)))
+                _effacer_profil_a_rejuger(cfg)
 
                 def tache():
                     etat_rejuge["en_cours"] = True
                     try:
                         cmd_analyser_ia(types.SimpleNamespace(
                             config=cfg["_chemin_config"], mock=False, retout=True,
-                            limite=300, jours=jours, compter=False))
+                            limite=REJUGE_MAX, jours=jours, compter=False))
                     except BaseException as e:
                         print(f"[{NOM}] rejugement : {e}", file=sys.stderr)
                     finally:
@@ -2738,7 +2807,7 @@ dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;col
   <label for="r-adresses">Tes adresses (une par ligne, alias compris)</label>
   <textarea id="r-adresses" style="min-height:60px"></textarea>
   <div class="btns"><button class="ok" id="r-ok">Enregistrer</button>
-    <button id="r-rejuger" title="Appels IA payants, bornés à 300 messages">Enregistrer et rejuger les 14 derniers jours</button>
+    <button id="r-rejuger" title="Appels IA payants, bornés à 300 messages ; le nombre exact est annoncé avant">Enregistrer et rejuger les 14 derniers jours…</button>
     <button id="r-annuler">Fermer</button></div>
   <div class="aide" id="r-etat"></div>
 </dialog>
@@ -2880,7 +2949,9 @@ $('reglages').onclick=ouvrirReglages;
 $('r-annuler').onclick=()=>$('dlg').close();
 $('r-ok').onclick=async()=>{await sauver();$('dlg').close();charger();};
 $('r-rejuger').onclick=async()=>{await sauver();
-  if(!confirm("Rejuger les 14 derniers jours avec ce profil ? (appels IA payants, 300 messages au plus ; tes corrections sont conservées)"))return;
+  const est=await api('/api/rejuger',{jours:14,compter:true});
+  if(!est.n){$('r-etat').textContent='Rien à rejuger sur les 14 derniers jours.';return;}
+  if(!confirm("Rejuger "+est.n+" message(s) des 14 derniers jours avec ce profil ?\\n\\nCela consomme des crédits IA ("+est.n+" appel(s), "+est.max+" au plus). Tes corrections sont conservées."))return;
   const r=await api('/api/rejuger',{jours:14});
   $('r-etat').textContent=r.ok?'Rejugement lancé : recharge le cockpit dans quelques minutes.':('Impossible : '+(r.erreur||''));};
 api('/api/reglages').then(r=>alertes(r.alertes)).catch(()=>{});

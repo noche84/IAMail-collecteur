@@ -57,14 +57,14 @@ PHP du brief GesEnt).
 
 | Variable | Contenu exact |
 |---|---|
-| `date_du_jour` | `{jour de la semaine} {J} {mois} {AAAA} (AAAA-MM-JJ)` en français, minuscules, `1er` pour le premier du mois, dans le fuseau de l'utilisateur — ex. `lundi 16 novembre 2026 (2026-11-16)` (2.2 : le jour de la semaine évite les erreurs sur « vendredi prochain ») |
-| `utilisateur` | facultatif (2.2) : **pour qui l'on trie**. `{nom}, {fonction}. {profil libre}.` — parties vides omises, espaces compactées, 1500 caractères au plus. IAMail : réglages du cockpit. GesEnt : réglage par utilisateur (boîte personnelle) ou par boîte (boîte partagée). Vide → le bloc DESTINATAIRE disparaît et l'entrée est identique à la 2.1 |
+| `date_du_jour` | `{jour de la semaine} {J} {mois} {AAAA} (AAAA-MM-JJ)` en français, minuscules, `1er` pour le premier du mois, dans le fuseau de l'utilisateur — ex. `lundi 16 novembre 2026 (2026-11-16)` (2.2 : le jour de la semaine évite les erreurs sur « vendredi prochain ») ; vecteurs : `tests/entree/date_du_jour.json` |
+| `utilisateur` | facultatif (2.2) : **pour qui l'on trie** — profil de l'utilisateur, puis description de la boîte. Règle de rendu exacte dans la section « Bloc DESTINATAIRE » ci-dessous (2.2.1) ; vecteurs : `tests/entree/destinataire.json`. Vide → le bloc DESTINATAIRE disparaît et l'entrée est identique à la 2.1 |
 | `niveaux` | une ligne par niveau, du plus urgent : `- {code} ({libelle}, à traiter sous {delai_heures} h) : {definition}` — sans `, à traiter…` si délai nul |
 | `categories` | une ligne par catégorie **active**, dans l'ordre : `- {code} : {libelle}. {description} (urgence habituelle : {urgence_defaut})` |
 | `expediteur` | en-tête From décodé, nom affiché et adresse : `Nom <adresse>` (adresse seule s'il n'y a pas de nom) |
 | `expediteur_connu` | facultatif : GesEnt — contact ou fiche reconnus, ex. `client Dupont SRL` ; IAMail — `dans la liste des expéditeurs importants du destinataire` si c'est le cas |
 | `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif — vide si n = 0 |
-| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. k = messages **antérieurs**, non traités, hors masse. GesEnt : tous ceux de l'expéditeur. IAMail : seulement ceux du **même fil** (sans le dossier Envoyés, « non traité » y est moins fiable) |
+| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. **Règle commune (2.2.1)** : k = messages du **même expéditeur** (adresse, minuscules), du **même fil** (identifiant de fil du client s'il existe, sinon clé de fil normalisée), reçus **avant** le message jugé et depuis moins de `relance_fenetre_jours`, **encore à traiter** (ni traités, ni reportés), hors courrier de masse. Le comptage de tous les messages de l'expéditeur (ancienne règle GesEnt) est abandonné : le statut « traité » n'est pas assez fiable pour lui |
 | `memoire` | facultatif : `fil « {sujet} » : {autres} autre(s) message(s) sur ce sujet, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` (sans la fin si chauds = 0) — vide s'il n'y a aucun autre message. **2.2** : on ne compte que les AUTRES messages du fil (jamais celui que l'on juge), reçus depuis moins de `fil_fenetre_jours` ; « chaud » = `important` OU urgence retenue (IA, sinon règles) `critique`/`haute` |
 | `pre_classement` | éléments joints par `, ` dans cet ordre : `à moi` / `en copie` / `diffusion` ; `expéditeur humain` / `expéditeur automatique` ; `courrier de masse` si bulk ; `marqué important` si important ; `soupçon d'hameçonnage (Reply-To d'un autre domaine)` si suspect |
 | `signaux` | `aucun`, ou pour chaque signal : `« {expression} » ({niveau}, monte)` / `(…, baisse)` / `(…, monte — ignoré : expéditeur automatique ou masse)`, joints par `, ` |
@@ -85,6 +85,41 @@ Extensions actives : leurs propriétés s'ajoutent (`action`, `chantier`, `evene
 La **case du topo** (maintenant / cette semaine / ce mois) n'est pas demandée à
 l'IA : elle se **déduit** de l'urgence, de l'échéance et d'`action_attendue`
 (`regles.json` → `topo`), de la même façon partout.
+
+## Bloc DESTINATAIRE (variable `utilisateur`, 2.2.1)
+
+Décidé avec GesEnt le 17/11/2026. Deux sources, dans cet ordre de priorité :
+
+- **U — le profil de l'utilisateur** : `{nom}, {fonction}. {profil libre}` (parties
+  vides omises). IAMail : réglages du cockpit. GesEnt : profil par utilisateur,
+  fortement encouragé (bandeau tant qu'il est vide), jamais bloquant.
+- **B — la description de la boîte**, facultative. GesEnt : réglage par boîte.
+  IAMail : clé `utilisateur.boite` de la config (une seule boîte).
+
+Quelle source selon la boîte : boîte **personnelle** → U puis B ; boîte **partagée**
+→ B seule (l'analyse est faite une fois pour tous les lecteurs).
+
+Rendu, en caractères (points de code — `mb_*` en PHP) :
+
+1. Chaque partie est **compactée** : espaces consécutives → une espace, puis espaces
+   et points finaux retirés.
+2. `U` = `{nom}, {fonction}` (virgule seulement si les deux existent), puis `. ` et
+   `{profil}` s'il existe.
+3. Si `U` fait 1500 caractères ou plus : `U[0:1499]`, espaces et points finaux
+   retirés, puis `.` — B est omise.
+4. Sinon, si B existe : séparateur `. Boîte : ` (ou `Boîte : ` si U est vide) ;
+   place restante = 1500 − |U| − |séparateur| − 1. Si elle est **≥ 40** : B coupée à
+   cette longueur, espaces et points finaux retirés, puis
+   `U + séparateur + B + .` ; sinon B est omise.
+5. Sinon `U + .` ; rien du tout si U et B sont vides.
+
+Résultat : 1500 caractères au plus, point final compris. Les deux harnais doivent
+reproduire **tous** les cas de `tests/entree/destinataire.json`.
+
+**Changement de profil** : l'enregistrement n'appelle jamais l'IA. Un bandeau propose
+de rejuger, avec le nombre de messages concernés et un avertissement sur les crédits ;
+plusieurs modifications → un seul rejugement ; bouton manuel toujours disponible.
+Limites : 14 jours, 300 messages, corrections humaines exclues.
 
 ## Topo rédigé par l'IA (`topo.txt`, 2.2)
 

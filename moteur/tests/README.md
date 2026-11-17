@@ -53,3 +53,15 @@ objet **RFC 2047 base64** · corps **ISO-8859-1** · freemail sans prénom.nom +
 - Aucun harnais ne modifie les cas pour « passer » : on corrige le harnais, ou on
   corrige `moteur/` (et la version) puis l'attendu, à la main.
 - Tout bug corrigé ajoute un cas (non-régression partagée).
+
+## Vecteurs de l'entrée IA (`entree/`, 2.2.1)
+
+Hors jeu `.eml` (les runners ne lisent que `cas/*.eml`) : petits fichiers JSON
+`{"cas": [{"entree"|"date": …, "attendu": …}]}` qui figent le rendu de variables de
+`entree.txt`. Chaque harnais les charge dans un test unitaire :
+
+| Fichier | Fonction testée |
+|---|---|
+| `entree/destinataire.json` | variable `utilisateur` (IAMail : `bloc_destinataire()`) |
+| `entree/date_du_jour.json` | variable `date_du_jour` (IAMail : `_date_du_jour_txt()`) |
+

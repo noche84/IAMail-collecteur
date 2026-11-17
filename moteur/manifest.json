@@ -1,8 +1,8 @@
 {
   "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "2.2.0",
-  "date": "2026-11-16",
+  "version": "2.2.1",
+  "date": "2026-11-17",
   "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
     "prompt.txt",
@@ -48,7 +48,11 @@
   "tests": {
     "dossier": "tests/",
     "contexte": "tests/contexte.json",
-    "cas": 29
+    "cas": 29,
+    "vecteurs": [
+      "tests/entree/destinataire.json",
+      "tests/entree/date_du_jour.json"
+    ]
   },
   "rupture_depuis_1x": [
     "urgence sur 4 niveaux (critique|haute|normale|basse) remplace priorite + pression ; la pression (case du topo) est déduite par le harnais (regles.topo)",
@@ -76,6 +80,12 @@
       "Extensions 'evenement' (date, heure, lieu, annule) et 'portee' (concerne : moi|autre|collectif) : à activer et à stocker ; le validateur doit gérer 'pattern' dans une propriété imbriquée.",
       "exemples : format d'une entrée fixé (README) ; une correction humaine devient un exemple.",
       "topo.txt : rédaction du topo par l'IA à partir des jugements, repli sur un gabarit local (README) — pour les harnais qui produisent un topo."
+    ],
+    "2.2.1": [
+      "Variable 'utilisateur' : rendu commun U (profil) puis B (description de la boîte), 1500 caractères au plus point final compris, B omise s'il reste moins de 40 caractères (README, section « Bloc DESTINATAIRE »). Boîte partagée : B seule.",
+      "Relances : règle commune « même expéditeur, même fil, messages antérieurs, encore à traiter, hors masse, fenêtre relance_fenetre_jours » ; le comptage de tous les messages de l'expéditeur est abandonné.",
+      "Vecteurs communs tests/entree/*.json (destinataire, date du jour) : à passer dans chaque harnais.",
+      "Changement de profil : jamais de rejugement automatique ; proposition avec estimation du nombre de messages ; 14 jours, 300 messages, corrections humaines exclues."
     ]
   },
   "topo": "topo.txt"

@@ -1,0 +1,29 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.2) pour la variable 'date_du_jour' de entree.txt : '{jour de la semaine} {J} {mois} {AAAA} (AAAA-MM-JJ)', minuscules, '1er' pour le premier du mois.",
+  "cas": [
+    {
+      "date": "2026-11-16",
+      "attendu": "lundi 16 novembre 2026 (2026-11-16)"
+    },
+    {
+      "date": "2026-11-01",
+      "attendu": "dimanche 1er novembre 2026 (2026-11-01)"
+    },
+    {
+      "date": "2026-12-25",
+      "attendu": "vendredi 25 décembre 2026 (2026-12-25)"
+    },
+    {
+      "date": "2027-02-28",
+      "attendu": "dimanche 28 février 2027 (2027-02-28)"
+    },
+    {
+      "date": "2027-08-01",
+      "attendu": "dimanche 1er août 2027 (2027-08-01)"
+    },
+    {
+      "date": "2028-02-29",
+      "attendu": "mardi 29 février 2028 (2028-02-29)"
+    }
+  ]
+}
