@@ -48,7 +48,29 @@ l'archive sont conservées).
   aujourd'hui Thunderbird. Pour **Outlook classique** (la plupart des collègues),
   l'**agent Outlook** est le prochain jalon — il alimentera le même compagnon.
 
-## 4. Pour distribuer
+## 4. Pour distribuer — construction automatique (GitHub Actions)
+
+Le workflow `.github/workflows/executables.yml` construit et **vérifie** les quatre
+exécutables sur des machines GitHub (Linux x64, Windows x64, Mac Apple, Mac Intel) :
+
+- à chaque PR ou push qui touche `compagnon/`, `moteur/` ou `empaquetage/` : les
+  exécutables sont téléchargeables dans l'onglet **Actions** (« artifacts », 30 jours) ;
+- à la demande : **Actions → Exécutables → Run workflow** ;
+- sur un **tag** `vX.Y.Z` (`git tag v1.19.1 && git push origin v1.19.1`) : une
+  **release GitHub** est publiée avec les exécutables, les installeurs et
+  `config.exemple.json`. Les installeurs trouvent seuls `iamail-linux-x64` /
+  `iamail-windows-x64.exe` posés à côté d'eux.
+
+Chaque exécutable passe `empaquetage/verifier-executable.py` : le moteur embarqué est
+celui du dépôt (`iamail --version` l'affiche), puis import d'un petit mbox, tri par les
+règles, IA simulée, brief. Une construction qui échoue ne publie rien.
+
+> **Mise à jour d'un poste** : un dossier `moteur/` posé à côté de l'exécutable
+> l'emporte sur la copie embarquée. Après une mise à jour, vérifier avec
+> `iamail --version` quel moteur est réellement chargé — et supprimer un ancien
+> `moteur/` resté à côté s'il masque la nouvelle version.
+
+## 5. Distribution manuelle
 
 Une fois construit et testé sur un OS, on peut pousser l'exécutable comme **release
 GitHub** (binaire), et les collègues lancent juste l'installeur. Les scripts, eux,
