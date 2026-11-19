@@ -28,7 +28,7 @@ jobs:
         include:
           - { os: ubuntu-22.04,   nom: linux-x64,     exe: compagnon/dist/iamail }       # glibc 2.35 : tourne sur les distributions récentes
           - { os: windows-latest, nom: windows-x64,   exe: compagnon/dist/iamail.exe }
-          - { os: macos-14,       nom: macos-arm64,   exe: compagnon/dist/iamail }       # Mac Apple (M1 et suivants)
+          - { os: macos-latest,   nom: macos-arm64,   exe: compagnon/dist/iamail }       # Mac Apple (M1 et suivants)
           - { os: macos-15-intel, nom: macos-x64,     exe: compagnon/dist/iamail }       # Mac Intel
     runs-on: ${{ matrix.os }}
     steps:

@@ -18,10 +18,20 @@ from pathlib import Path
 RACINE = Path(__file__).resolve().parent.parent
 
 
+def _texte(octets):
+    """Sortie de l'exécutable : UTF-8 sous Linux et macOS ; sous Windows, une sortie
+    redirigée est dans le jeu de caractères de la console (cp1252)."""
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return octets.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return octets.decode("utf-8", errors="replace")
+
+
 def lancer(exe, *args, cwd):
-    r = subprocess.run([str(exe), *args], cwd=cwd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=180)
-    sortie = (r.stdout or "") + (r.stderr or "")
+    r = subprocess.run([str(exe), *args], cwd=cwd, capture_output=True, timeout=180)
+    sortie = _texte(r.stdout or b"") + _texte(r.stderr or b"")
     print(f"$ iamail {' '.join(args)}\n{sortie.strip()}\n")
     if r.returncode != 0:
         sys.exit(f"ÉCHEC (code {r.returncode}) : {' '.join(args)}")
@@ -29,6 +39,11 @@ def lancer(exe, *args, cwd):
 
 
 def main():
+    for flux in (sys.stdout, sys.stderr):      # même précaution que l'exécutable
+        try:
+            flux.reconfigure(errors="replace")
+        except Exception:
+            pass
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     exe = Path(sys.argv[1]).resolve()
