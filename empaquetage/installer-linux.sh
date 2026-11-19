@@ -11,10 +11,13 @@ ICI="$(cd "$(dirname "$0")" && pwd)"
 # Trouve l'exécutable : argument, puis emplacements usuels (dépôt OU bundle à plat).
 EXE="${1:-}"
 if [ -z "$EXE" ]; then
-  for c in "$ICI/iamail" "$ICI/dist/iamail" "$ICI/../compagnon/dist/iamail" "$ICI/../dist/iamail"; do
-    [ -x "$c" ] && EXE="$c" && break
+  # « iamail-linux-x64 » = nom de l'exécutable dans une release GitHub.
+  for c in "$ICI/iamail" "$ICI/iamail-linux-x64" "$ICI/dist/iamail" "$ICI/../compagnon/dist/iamail" "$ICI/../dist/iamail"; do
+    [ -f "$c" ] && EXE="$c" && break
   done
 fi
+# Un fichier téléchargé n'est pas exécutable : on rétablit le droit.
+[ -n "$EXE" ] && [ -f "$EXE" ] && chmod +x "$EXE" 2>/dev/null || true
 [ -n "$EXE" ] && [ -x "$EXE" ] || { echo "Exécutable introuvable.
 Passe son chemin en argument, ou construis-le :  bash construire-linux.sh"; exit 1; }
 

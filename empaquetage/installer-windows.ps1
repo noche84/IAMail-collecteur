@@ -7,7 +7,13 @@
 # Sans argument, prend compagnon\dist\iamail.exe (sortie de construire-windows.ps1).
 $ErrorActionPreference = "Stop"
 $ici = $PSScriptRoot
-$exe = if ($args.Count -ge 1) { $args[0] } else { Join-Path $ici "..\compagnon\dist\iamail.exe" }
+$exe = if ($args.Count -ge 1) { $args[0] } else {
+  # Release GitHub (à plat) : iamail-windows-x64.exe à côté du script ; sinon le dépôt.
+  @((Join-Path $ici "iamail-windows-x64.exe"), (Join-Path $ici "iamail.exe"),
+    (Join-Path $ici "..\compagnon\dist\iamail.exe")) |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $exe) { $exe = Join-Path $ici "..\compagnon\dist\iamail.exe" }
 if (-not (Test-Path $exe)) {
   Write-Error "Exécutable introuvable : $exe`nConstruis-le d'abord : construire-windows.ps1"; exit 1
 }

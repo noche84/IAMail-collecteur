@@ -1,0 +1,95 @@
+# Construit et vérifie l'exécutable autonome IAMail sur Linux, Windows et macOS.
+# PyInstaller ne fait pas de compilation croisée : chaque OS a sa machine.
+#
+# - Sur chaque PR / push qui touche le compagnon, le moteur ou l'empaquetage :
+#   construction + vérification de bout en bout ; exécutables en « artifacts ».
+# - Sur un tag vX.Y.Z : idem, puis publication d'une release GitHub avec les
+#   exécutables et les scripts d'installation.
+# - À la demande : onglet Actions → « Exécutables » → Run workflow.
+name: Exécutables
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths: ["compagnon/**", "moteur/**", "empaquetage/**", ".github/workflows/executables.yml"]
+  pull_request:
+    paths: ["compagnon/**", "moteur/**", "empaquetage/**", ".github/workflows/executables.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  construire:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   nom: linux-x64,     exe: compagnon/dist/iamail }       # glibc 2.35 : tourne sur les distributions récentes
+          - { os: windows-latest, nom: windows-x64,   exe: compagnon/dist/iamail.exe }
+          - { os: macos-latest,   nom: macos-arm64,   exe: compagnon/dist/iamail }       # Mac Apple (M1 et suivants)
+          - { os: macos-15-intel, nom: macos-x64,     exe: compagnon/dist/iamail }       # Mac Intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tests du compagnon et conformité du moteur
+        if: runner.os == 'Linux'
+        run: |
+          python -I moteur/tests/run_conformance.py
+          python -I compagnon/tests/test_pertinence.py
+
+      - name: Construire (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          python -m pip install --quiet --upgrade pyinstaller
+          bash empaquetage/construire-${{ runner.os == 'Linux' && 'linux' || 'macos' }}.sh
+
+      - name: Construire (Windows, avec l'agent Outlook)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File empaquetage\construire-windows.ps1
+
+      - name: Vérifier l'exécutable de bout en bout
+        run: python empaquetage/verifier-executable.py ${{ matrix.exe }}
+
+      - name: Nommer l'exécutable
+        shell: bash
+        run: |
+          mkdir -p livraison
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          cp "${{ matrix.exe }}" "livraison/iamail-${{ matrix.nom }}${ext}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iamail-${{ matrix.nom }}
+          path: livraison/*
+          retention-days: 30
+
+  publier:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: construire
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: livraison
+          merge-multiple: true
+      - name: Publier la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp empaquetage/installer-linux.sh empaquetage/desinstaller-linux.sh \
+             empaquetage/installer-windows.ps1 empaquetage/desinstaller-windows.ps1 \
+             compagnon/config.exemple.json livraison/
+          gh release create "${GITHUB_REF_NAME}" livraison/* \
+            --title "IAMail ${GITHUB_REF_NAME}" \
+            --notes "Exécutables autonomes du compagnon IAMail (moteur $(python3 -c 'import json;print(json.load(open("moteur/manifest.json"))["version"])')). Voir empaquetage/README.md pour l'installation."

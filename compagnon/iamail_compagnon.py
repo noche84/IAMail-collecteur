@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.19.0"
+VERSION = "1.19.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -3601,10 +3601,35 @@ def cmd_service(args):
 # ----------------------------------------------------------------------------
 # Entrée
 # ----------------------------------------------------------------------------
+def _version_complete():
+    """« IAMail-compagnon 1.19.0 — moteur 2.3.0 (…/moteur) » : dit aussi QUEL moteur est
+    chargé — celui posé à côté de l'exécutable l'emporte sur la copie embarquée."""
+    try:
+        d = _moteur_dir({})
+        m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        return f"{NOM} {VERSION} — moteur {m.get('version', '?')} ({d})"
+    except Exception as e:
+        return f"{NOM} {VERSION} — moteur introuvable ({e})"
+
+
+def _sorties_sures():
+    """Sous Windows, une sortie redirigée (service, fichier, CI) est en cp1252 : un émoji
+    ou un caractère hors table faisait planter le programme. On remplace au lieu de
+    planter ; l'encodage choisi par le système ne change pas."""
+    for flux in (sys.stdout, sys.stderr):
+        try:
+            flux.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    _sorties_sures()
     ap = argparse.ArgumentParser(prog="iamail_compagnon",
                                  description=f"{NOM} v{VERSION}")
     ap.add_argument("--config", default="config.json", help="fichier de configuration")
+    ap.add_argument("--version", action="version", version=_version_complete(),
+                    help="affiche la version du compagnon et du moteur utilisé")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init", help="crée config + base")
