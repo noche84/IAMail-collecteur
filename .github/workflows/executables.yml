@@ -5,11 +5,18 @@
 #   construction + vérification de bout en bout ; exécutables en « artifacts ».
 # - Sur un tag vX.Y.Z : idem, puis publication d'une release GitHub avec les
 #   exécutables et les scripts d'installation.
-# - À la demande : onglet Actions → « Exécutables » → Run workflow.
+# - À la demande : onglet Actions → « Exécutables » → Run workflow. Si on y saisit une
+#   version (ex. v1.19.1), le workflow crée lui-même le tag et la release sur la
+#   branche choisie — rien à installer, un navigateur suffit.
 name: Exécutables
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à publier (ex. v1.19.1). Vide = construire seulement."
+        required: false
+        default: 
   push:
     tags: ["v*"]
     branches: [main]
@@ -72,7 +79,7 @@ jobs:
           retention-days: 30
 
   publier:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.version, 'v')
     needs: construire
     runs-on: ubuntu-latest
     permissions:
@@ -86,10 +93,21 @@ jobs:
       - name: Publier la release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION_SAISIE: ${{ inputs.version }}
         run: |
+          # Tag poussé : son nom. Lancement à la main : la version saisie.
+          if [ -n "$VERSION_SAISIE" ]; then TAG="$VERSION_SAISIE"; else TAG="$GITHUB_REF_NAME"; fi
+          case "$TAG" in v[0-9]*) ;; *) echo "Version invalide : $TAG (attendu vX.Y.Z)"; exit 1;; esac
           cp empaquetage/installer-linux.sh empaquetage/desinstaller-linux.sh \
              empaquetage/installer-windows.ps1 empaquetage/desinstaller-windows.ps1 \
              compagnon/config.exemple.json livraison/
-          gh release create "${GITHUB_REF_NAME}" livraison/* \
-            --title "IAMail ${GITHUB_REF_NAME}" \
-            --notes "Exécutables autonomes du compagnon IAMail (moteur $(python3 -c 'import json;print(json.load(open("moteur/manifest.json"))["version"])')). Voir empaquetage/README.md pour l'installation."
+          MOTEUR=$(python3 -c 'import json;print(json.load(open("moteur/manifest.json"))["version"])')
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Release déjà créée (à la main, ou relance) : on remplace les fichiers.
+            gh release upload "$TAG" livraison/* --clobber
+          else
+            # --target : crée le tag sur le commit construit s'il n'existe pas encore.
+            gh release create "$TAG" livraison/* --target "$GITHUB_SHA" \
+              --title "IAMail $TAG" \
+              --notes "Exécutables autonomes du compagnon IAMail (moteur $MOTEUR). Voir empaquetage/README.md pour l'installation."
+          fi
