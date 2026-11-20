@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>IAMail — liaison avec GesEnt</title>
+<style>
+  :root { --vert: #2E7D32; --gris: #667085; --bord: #d0d5dd; --fond: #f9fafb; --rouge: #b42318; }
+  body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #101828; max-width: 760px; margin: 32px auto; padding: 0 20px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 28px 0 8px; }
+  p.aide { color: var(--gris); margin: 4px 0 16px; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--bord); border-radius: 6px; font: inherit; }
+  input#code { text-transform: uppercase; letter-spacing: .15em; max-width: 180px; }
+  button { margin-top: 16px; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--bord); background: #fff; font: inherit; cursor: pointer; }
+  button.principal { background: var(--vert); border-color: var(--vert); color: #fff; }
+  .carte { border: 1px solid var(--bord); border-radius: 8px; padding: 14px 16px; background: var(--fond); }
+  .pastille { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: #eaecf0; }
+  .pastille.oui { background: #dcfae6; color: #085d3a; } .pastille.non { background: #fef3f2; color: var(--rouge); }
+  table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid #eaecf0; vertical-align: top; }
+  th { font-weight: 600; color: var(--gris); font-size: 12px; }
+  #message { margin-top: 12px; } .erreur { color: var(--rouge); } .ok { color: var(--vert); }
+  ul.journal { list-style: none; padding: 0; margin: 0; font-size: 13px; } ul.journal li { padding: 2px 0; } ul.journal .quand { color: var(--gris); margin-right: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>IAMail — liaison avec GesEnt</h1>
+  <p class="aide">Relié, ce poste envoie chaque mail à GesEnt dès son arrivée, puis l'existant de la boîte. GesEnt fait foi pour « Traité » ; le cockpit local passe en lecture seule.</p>
+
+  <section id="relier" hidden>
+    <div class="carte">
+      <label for="instance">Adresse de GesEnt</label>
+      <input id="instance" placeholder="gesent.mon-entreprise.be" autocomplete="url">
+      <label for="code">Code de liaison</label>
+      <input id="code" placeholder="K7Q2-M9XD" maxlength="9" autocomplete="off">
+      <p class="aide">Dans GesEnt : Courrier → Mes collecteurs → Relier un poste (code valable 15 minutes, une seule fois).</p>
+      <label for="poste">Nom de ce poste (facultatif)</label>
+      <input id="poste" placeholder="PC-ACCUEIL-02" maxlength="100">
+      <button class="principal" id="btn-relier">Relier ce poste</button>
+      <div id="message"></div>
+    </div>
+  </section>
+
+  <section id="etat" hidden>
+    <div class="carte">
+      <div><strong id="instance-affichee"></strong> <span id="statut" class="pastille"></span></div>
+      <div class="aide" id="resume"></div>
+      <button id="btn-envoyer">Envoyer maintenant</button>
+      <button id="btn-delier">Délier ce poste</button>
+      <div id="message2"></div>
+    </div>
+    <h2>Boîtes</h2>
+    <table><thead><tr><th>Boîte</th><th>GesEnt fait foi</th><th>Historique envoyé</th></tr></thead><tbody id="boites"></tbody></table>
+    <h2>Journal</h2>
+    <ul class="journal" id="journal"></ul>
+    <div id="bloc-rejets" hidden><h2>Refus de GesEnt</h2><ul class="journal" id="rejets"></ul></div>
+  </section>
+  <script src="options.js"></script>
+</body>
+</html>

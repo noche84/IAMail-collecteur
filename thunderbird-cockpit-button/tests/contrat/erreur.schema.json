@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gesent/iaemail/v1/erreur.schema.json",
+  "title": "Erreur (protocole v1)",
+  "type": "object",
+  "required": [
+    "erreur"
+  ],
+  "properties": {
+    "erreur": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "requete_invalide",
+            "jeton_invalide",
+            "jeton_revoque",
+            "hors_portee",
+            "module_inactif",
+            "code_inconnu",
+            "introuvable",
+            "moteur_incompatible",
+            "protocole_incompatible",
+            "code_utilise",
+            "code_expire",
+            "trop_volumineux",
+            "trop_de_requetes",
+            "indisponible",
+            "maintenance",
+            "source_differente",
+            "source_corrompue"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

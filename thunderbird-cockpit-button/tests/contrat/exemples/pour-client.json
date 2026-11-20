@@ -1,0 +1,14 @@
+{
+  "etiquette": {
+    "cle": "traite_iamail",
+    "nom": "Traité IAMail",
+    "couleur": "#2E7D32"
+  },
+  "a_marquer": [
+    {
+      "boite_id": 7,
+      "message_id": "AB12@exemple.be"
+    }
+  ],
+  "a_demarquer": []
+}

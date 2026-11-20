@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gesent/iaemail/v1/reponse-lot.schema.json",
+  "title": "Réponse de GesEnt à un lot (protocole v1)",
+  "type": "object",
+  "required": [
+    "lot_id",
+    "deja_recu",
+    "messages",
+    "gestes",
+    "rejets",
+    "moteur_version_serveur"
+  ],
+  "properties": {
+    "lot_id": {
+      "type": "string"
+    },
+    "deja_recu": {
+      "type": "boolean"
+    },
+    "messages": {
+      "type": "object",
+      "required": [
+        "nouveaux",
+        "deja_connus"
+      ],
+      "properties": {
+        "nouveaux": {
+          "type": "integer"
+        },
+        "deja_connus": {
+          "type": "integer"
+        },
+        "a_televerser": {
+          "type": "integer"
+        }
+      }
+    },
+    "gestes": {
+      "type": "object",
+      "required": [
+        "appliques",
+        "en_attente"
+      ],
+      "properties": {
+        "appliques": {
+          "type": "integer"
+        },
+        "en_attente": {
+          "type": "integer"
+        }
+      }
+    },
+    "rejets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "index",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "message",
+              "geste"
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "code": {
+            "enum": [
+              "source_corrompue",
+              "message_id_invalide",
+              "boite_inconnue",
+              "hors_portee",
+              "geste_orphelin"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "moteur_version_serveur": {
+      "type": "string"
+    }
+  }
+}

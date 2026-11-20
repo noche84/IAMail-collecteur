@@ -227,6 +227,19 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.23 — relié à GesEnt
+
+- L'extension Thunderbird `thunderbird-cockpit-button/` (2.0.0) peut **relier le poste à
+  GesEnt** (code de liaison, protocole d'ingestion v1) : chaque mail part vers GesEnt dès
+  son arrivée, puis l'existant de la boîte. Voir `thunderbird-cockpit-button/README.md`.
+- **Relié, GesEnt fait foi** : l'extension l'annonce au compagnon (`POST /api/relie`).
+  Le cockpit local passe en **lecture seule** (bandeau « relié à GesEnt », boutons
+  d'action masqués, écritures refusées en `409 relie`), il ne pose plus l'étiquette
+  « Traité » et le service **n'appelle plus l'IA** localement (GesEnt juge : pas de
+  double coût). La relève et le tri par les règles continuent pour la consultation.
+  Délié ou jeton révoqué : tout revient comme avant. État gardé dans `relie.json`, à
+  côté de la base.
+
 ## Nouveautés 1.22 — agent Apple Mail (macOS)
 
 - **`"collecteur": "applemail"`** : sur Mac, le compagnon pilote l'app **Mail** (Apple

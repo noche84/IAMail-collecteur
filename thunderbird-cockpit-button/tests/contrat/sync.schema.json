@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gesent/iaemail/v1/sync.schema.json",
+  "title": "Synchro « Traité » par collecteur (protocole v1)",
+  "$defs": {
+    "ref": { "type": "object", "required": ["boite_id", "message_id"], "properties": { "boite_id": { "type": "integer" }, "message_id": { "type": "string" } } },
+    "refs": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/ref" } },
+    "pour_client": {
+      "type": "object",
+      "required": ["etiquette", "a_marquer", "a_demarquer"],
+      "properties": {
+        "etiquette": { "type": "object", "required": ["cle", "nom", "couleur"], "properties": { "cle": { "type": "string" }, "nom": { "type": "string" }, "couleur": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" } } },
+        "a_marquer": { "$ref": "#/$defs/refs" },
+        "a_demarquer": { "$ref": "#/$defs/refs" },
+        "a_restaurer": { "$ref": "#/$defs/refs" }
+      }
+    },
+    "confirme": { "type": "object", "properties": { "marques": { "$ref": "#/$defs/refs" }, "demarques": { "$ref": "#/$defs/refs" } } },
+    "depuis_client": { "type": "object", "properties": { "traites": { "$ref": "#/$defs/refs" }, "non_traites": { "$ref": "#/$defs/refs" }, "ranges": { "$ref": "#/$defs/refs" } } }
+  }
+}

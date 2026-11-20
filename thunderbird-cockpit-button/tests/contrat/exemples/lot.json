@@ -1,0 +1,88 @@
+{
+  "protocole": 1,
+  "lot_id": "0b8f6a1e-3c1d-4f7e-9a51-6a3a4d2a9c11",
+  "emis_le": "2026-11-20T08:14:03+01:00",
+  "moteur_version": "2.4.0",
+  "messages": [
+    {
+      "boite_id": 7,
+      "message_id": "CAF=abc123@mail.gmail.com",
+      "recu_le": "2026-11-20T08:13:58+01:00",
+      "tri_local": {
+        "categorie": "demande_devis",
+        "pour_moi": 1,
+        "expediteur_humain": 1,
+        "bulk": 0,
+        "important": 1,
+        "suspect": 0,
+        "urgence": "normale",
+        "signaux": [],
+        "cle_fil": "devis toiture"
+      },
+      "etat_local": {
+        "dossier": "INBOX",
+        "lu": false,
+        "etiquette_traite": false
+      },
+      "source": {
+        "format": "eml",
+        "origine": "brut",
+        "encodage": "gzip+base64",
+        "sha256": "80d71b9816632d1bcc04457dcc5ee4e1b3bd76cae38677a3cfc9b5c9fe6367b0",
+        "taille": 214,
+        "donnees": "H4sIAAAAAAAC/x2OywrCMBRE94H8w93blrSiSPBRtRRc6EZ/IK1XSWlzS14Lv97QzRxmBoZpLU0SrqNG46EJMyXs+8XW78UWHp0/cvYiCdp8qE6Vxdlqh0WHnD1DN2DvJTQYtQNP2geb8js6p76Y3xoJ++u5PaiuL6t1PSk9Ft9Fe5rScKM8SmitzqAS8KCYUG1B7GS5lpsdrEQpBGecXcgMFGwGM4WIvzxScDAhfJS2CMHAe3lw4uwPibi/PNYAAAA="
+      }
+    },
+    {
+      "boite_id": 7,
+      "message_id": "0000000012AB34CD@exchange.local",
+      "recu_le": "2026-11-20T08:14:01+01:00",
+      "source": {
+        "format": "msg",
+        "origine": "brut",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "taille": 20971520,
+        "a_televerser": true
+      },
+      "entetes": {
+        "de": "Plans Dupont <plans@dupont.test>",
+        "a": [
+          "info@entreprise.be"
+        ],
+        "cc": [],
+        "objet": "Plans de la phase 2",
+        "date": "Fri, 20 Nov 2026 08:13:40 +0100"
+      },
+      "tri_local": {
+        "categorie": "autre",
+        "pour_moi": 1,
+        "expediteur_humain": 1,
+        "bulk": 0,
+        "important": 0,
+        "suspect": 0,
+        "urgence": "normale",
+        "signaux": [],
+        "cle_fil": "plans de la phase 2"
+      },
+      "etat_local": {
+        "dossier": "Boîte de réception",
+        "lu": false,
+        "etiquette_traite": false
+      }
+    }
+  ],
+  "gestes": [
+    {
+      "boite_id": 7,
+      "message_id": "AB12@exemple.be",
+      "geste": "supprime",
+      "le": "2026-11-20T08:12:40+01:00",
+      "utilisateur": "jdupont",
+      "machine": "PC-ACCUEIL-02",
+      "details": {
+        "depuis": "INBOX"
+      }
+    }
+  ],
+  "mode": "arrivee"
+}

@@ -47,7 +47,7 @@ l'archive sont conservées).
 
 | Client mail | Poste | Source des mails | Retour-mail « Traité » |
 |-------------|-------|------------------|------------------------|
-| Thunderbird | Linux, macOS, Windows | lecture du mbox | étiquette, via l'extension `src/` |
+| Thunderbird | Linux, macOS, Windows | lecture du mbox | étiquette, via l'extension `thunderbird-cockpit-button/` (`.xpi` joint aux releases) |
 | Outlook classique | Windows | agent COM (`AGENT-OUTLOOK.md`) | catégorie « Traité IAMail » + lu |
 | Apple Mail | macOS | agent JXA (`AGENT-APPLEMAIL.md`) | drapeau vert + lu |
 
