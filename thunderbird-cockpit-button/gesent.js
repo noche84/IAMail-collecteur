@@ -58,6 +58,11 @@
       + p(d.getMinutes()) + ":" + p(d.getSeconds()) + (o >= 0 ? "+" : "-") + p(Math.trunc(o / 60)) + ":" + p(o % 60);
   }
   const cleRef = (b, m) => b + "\u0000" + m;
+  function enTetesSeules(brut) {                  // bloc d'en-têtes + ligne vide, corps retiré
+    const bin = MIME.octetsVersBinaire(brut);
+    const m = bin.match(/\r?\n\r?\n/);
+    return MIME.binaireVersOctets((m ? bin.slice(0, m.index) : bin) + "\r\n\r\n");
+  }
   const sansChevrons = s => String(s || "").replace(/[<>\s]/g, "");
 
   const ETAT_VIDE = () => ({
@@ -176,7 +181,10 @@
     // --- appairage, portée, moteur -----------------------------------------------------------
     async appairer(instance, code, comptesLocaux) {
       this.etat.instance = String(instance).trim().replace(/\/+$/, "");
-      if (!/^https?:\/\//.test(this.etat.instance)) this.etat.instance = "https://" + this.etat.instance;
+      if (!/^https?:\/\//.test(this.etat.instance)) {
+        const local = /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(this.etat.instance);
+        this.etat.instance = (local ? "http://" : "https://") + this.etat.instance;
+      }
       const tb = this.env.tb;
       const r = await this.requete("POST", "/appairage", { sansJeton: true, json: {
         code: String(code).trim().toUpperCase(),
@@ -271,16 +279,20 @@
 
     // --- préparation d'un message ---------------------------------------------------------------
     async preparer(entete, boite, brutDonne) {
-      const brut = brutDonne || await this.env.tb.lireBrut(entete.id);
+      let brut = brutDonne || await this.env.tb.lireBrut(entete.id);
       if (!brut) return null;
+      // Dossier Envoyés (§ 4.2 bis) : GesEnt n'en garde que l'index (fil, mémoire, relances),
+      // rien n'est archivé — on n'envoie que les en-têtes, pas les pièces jointes.
+      if (entete.envoye) brut = enTetesSeules(brut);
       const lu = await this.moteur.lire(brut, await this.mesAdresses(entete.compte), []);
       const gz = await gzip(brut);
-      const source = { format: "eml", origine: "brut", sha256: await sha256Hex(brut), taille: brut.length };
+      const source = { format: "eml", origine: entete.envoye ? "reconstruit" : "brut", sha256: await sha256Hex(brut), taille: brut.length };
       const m = {
         boite_id: boite.boite_id, message_id: lu.message_id,
         recu_le: isoLocal(entete.date || this.maintenant()),
         source,
         tri_local: lu.tri_local,
+        sens: entete.envoye ? "envoye" : "recu",
         etat_local: { dossier: entete.dossier || "INBOX", lu: !!entete.lu,
           etiquette_traite: !!(this.etat.etiquette && (entete.tags || []).includes(this.etat.etiquette.cle)) },
       };
@@ -390,7 +402,11 @@
       if (!this.estRelie()) return null;
       const x = await this._refDepuisEntete(entete);
       if (!x) return null;
-      if (x.boite.relie) this.etat.file.push({ type: "etat", liste: "ranges", ref: x.ref });
+      if (x.boite.relie) {
+        const ref = Object.assign({}, x.ref, { geste: supprime ? "supprime" : "deplace" });
+        if (!supprime && vers) ref.vers = String(vers).slice(0, 255);
+        this.etat.file.push({ type: "etat", liste: "ranges", ref });   // le journal suit (§ 5), pas de geste en double
+      }
       else await this._geste(x.ref, supprime ? "supprime" : "deplace", supprime ? undefined : { vers: vers || "" });
       await this.sauver();
       this.planifier(2000);
@@ -514,7 +530,8 @@
           st.curseur = lot.curseur;
         }
         const nv = r.corps.messages || {};
-        this.noter("info", `lot ${lot.mode} : ${nv.nouveaux || 0} nouveau(x), ${nv.deja_connus || 0} déjà connu(s)${r.corps.deja_recu ? " (déjà reçu)" : ""}`);
+        this.noter("info", `lot ${lot.mode} : ${nv.nouveaux || 0} nouveau(x), ${nv.deja_connus || 0} déjà connu(s)`
+          + (nv.envoyes ? `, ${nv.envoyes} envoi(s)` : "") + (r.corps.deja_recu ? " (déjà reçu)" : ""));
         await this._oublierSources(lot.items);
         this.etat.lotEnCours = null;
         return true;
@@ -714,19 +731,23 @@
     async synchroTraite() {
       if (!this.boitesReliees().length || this.maintenant().getTime() < this.etat.attenteJusqua) return null;
       const tb = this.env.tb;
-      let bilan = { marques: 0, demarques: 0 };
+      let bilan = { marques: 0, demarques: 0, introuvables: 0 };
       for (let tour = 0; tour < 20; tour++) {
         const r = await this.requete("GET", "/sync/pour-client");
         if (r.statut !== 200 || !r.corps) { await this._subirErreur(r, "GET /sync/pour-client"); break; }
         const et = r.corps.etiquette || this.etat.etiquette;
         if (et) { this.etat.etiquette = et; await tb.assurerEtiquette(et); }
-        const marques = [], demarques = [];
+        const marques = [], demarques = [], introuvables = [];
         for (const [liste, poser, sortie] of [["a_marquer", true, marques], ["a_demarquer", false, demarques]]) {
           for (const ref of r.corps[liste] || []) {
             const b = this.boite(ref.boite_id);
             if (!b) continue;
             const ids = this.etat.synth[ref.message_id] != null ? [{ id: this.etat.synth[ref.message_id] }]
               : await tb.chercherParMessageId(ref.message_id, await this.comptesDeBoite(b));
+            if (!ids.length) {                       // absent de ce Thunderbird : GesEnt cessera de le proposer
+              introuvables.push({ boite_id: ref.boite_id, message_id: ref.message_id });
+              continue;
+            }
             let ok = false;
             for (const e of ids) {
               this.ignorer.set(e.id, this.maintenant().getTime() + 15000);
@@ -739,13 +760,15 @@
             }
           }
         }
-        if (marques.length || demarques.length) {
-          const c = await this.requete("POST", "/sync/confirme", { json: { marques, demarques } });
+        if (marques.length || demarques.length || introuvables.length) {
+          const corps = { marques, demarques };
+          if (introuvables.length) corps.introuvables = introuvables;
+          const c = await this.requete("POST", "/sync/confirme", { json: corps });
           if (c.statut !== 204 && c.statut !== 200) { await this._subirErreur(c, "POST /sync/confirme"); break; }
-          bilan.marques += marques.length; bilan.demarques += demarques.length;
+          bilan.marques += marques.length; bilan.demarques += demarques.length; bilan.introuvables += introuvables.length;
         }
         const pleine = (r.corps.a_marquer || []).length >= SYNC_MAX || (r.corps.a_demarquer || []).length >= SYNC_MAX;
-        if (!pleine || (!marques.length && !demarques.length)) break;
+        if (!pleine || (!marques.length && !demarques.length && !introuvables.length)) break;
       }
       await this.sauver();
       return bilan;

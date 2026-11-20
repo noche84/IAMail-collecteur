@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "IAMail — cockpit, synchro et GesEnt",
   "description": "Ouvre le cockpit IAMail et synchronise « Traité » avec Thunderbird. Reliée à GesEnt, envoie chaque mail dès son arrivée (puis l'existant) et laisse GesEnt faire foi.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "Arnaud François",
   "browser_specific_settings": {
     "gecko": {

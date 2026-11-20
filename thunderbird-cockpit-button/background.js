@@ -26,12 +26,13 @@ function usagesDossier(f) {
 }
 const dossierCollecte = f => !usagesDossier(f).some(u => SPECIAUX_EXCLUS.includes(u));
 const estCorbeille = f => usagesDossier(f).includes("trash");
+const estEnvoyes = f => usagesDossier(f).includes("sent");
 const estBoiteReception = f => usagesDossier(f).includes("inbox");
 
 function entete(m) {
   return { id: m.id, compte: m.folder && m.folder.accountId, date: m.date ? new Date(m.date) : null,
     dossier: (m.folder && (m.folder.path || m.folder.name)) || "INBOX", lu: !!m.read, tags: m.tags || [],
-    messageIdTb: m.headerMessageId || "" };
+    messageIdTb: m.headerMessageId || "", envoye: estEnvoyes(m.folder) };
 }
 async function* pages(liste) {
   let l = liste;
@@ -77,7 +78,9 @@ const adaptateur = {
     let liste;
     try { liste = await messenger.messages.query({ accountId: comptes, fromDate: debut, toDate: fin, messagesPerPage: 500 }); }
     catch (e) { liste = await messenger.messages.query({ fromDate: debut, toDate: fin }); }   // Thunderbird sans accountId
-    return (await tous(liste)).filter(m => m.folder && comptes.includes(m.folder.accountId) && dossierCollecte(m.folder)).map(entete);
+    // Dossiers collectés + Envoyés (envoyés à GesEnt avec sens « envoye », en-têtes seulement).
+    return (await tous(liste)).filter(m => m.folder && comptes.includes(m.folder.accountId)
+      && (dossierCollecte(m.folder) || estEnvoyes(m.folder))).map(entete);
   },
   async machine() { const r = await messenger.storage.local.get("poste"); return r.poste || undefined; },
   async utilisateurOs() { return undefined; },     // rien de personnel par défaut (CCT n° 81)
@@ -213,7 +216,7 @@ cycle().catch(() => {});
 // --- Arrivée de nouveaux messages : envoyés à GesEnt (boîtes de la portée) ---
 messenger.messages.onNewMailReceived.addListener(async (dossier, liste) => {
   await pret;
-  if (!client.estRelie() || !dossierCollecte(dossier)) return;
+  if (!client.estRelie() || !(dossierCollecte(dossier) || estEnvoyes(dossier))) return;
   for await (const m of pages(liste)) {
     try { await client.surArrivee(entete(m)); } catch (e) { client.noter("erreur", "arrivée : " + e); }
   }
@@ -231,6 +234,7 @@ messenger.messages.onUpdated.addListener(async (msg, changed) => {
   if (!mid) return;
   await pret;
   const e = Object.assign(entete(msg), { tags: changed.tags || [] });
+  if (e.envoye) return;                                              // un envoi n'a pas d'état « Traité »
   const reliee = await relieePourCompte(e.compte);
   if (client.estRelie()) await client.surEtiquette(e, CLE_DEFAUT);   // GesEnt (état) ou journal (geste)
   if (reliee) return;                                                // GesEnt fait foi : pas le cockpit local
@@ -244,6 +248,7 @@ messenger.messages.onUpdated.addListener(async (msg, changed) => {
 async function surRange(m, options) {
   await pret;
   const e = entete(m);
+  if (e.envoye) return;                                              // ranger un envoi n'est pas traiter
   if (client.estRelie()) await client.surRangement(e, options);
   if (!(await relieePourCompte(e.compte)) && e.messageIdTb) await prevenirCockpit({ traites: [e.messageIdTb], non_traites: [] });
 }

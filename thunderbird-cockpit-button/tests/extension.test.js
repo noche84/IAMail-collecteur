@@ -67,7 +67,8 @@ const attendre = ms => new Promise(r => setTimeout(r, ms));
 
   console.log("1. Page d'options : appairage");
   const etat0 = await ecouteurs.onMessage({ cmd: "etat" });
-  verif(etat0.ok && etat0.statut === "non_relie" && etat0.version === "2.0.0", "état initial : non relié, extension 2.0.0");
+  const versionExt = require(path.join(EXT, "manifest.json")).version;
+  verif(etat0.ok && etat0.statut === "non_relie" && etat0.version === versionExt, `état initial : non relié, extension ${versionExt}`);
   const r = await ecouteurs.onMessage({ cmd: "appairer", instance: "gesent.test", code: "K7Q2-M9XD", poste: "PC-ACCUEIL-02" });
   verif(r.ok, "appairage accepté" + (r.ok ? "" : " — " + r.erreur));
   verif(g.appairage.comptes_locaux.some(c => c.adresse === "info@entreprise.be") && g.appairage.comptes_locaux.length === 4, "comptes locaux = identités des comptes Thunderbird (dédoublonnées)");
@@ -83,6 +84,13 @@ const attendre = ms => new Promise(r => setTimeout(r, ms));
   await ecouteurs.onNewMailReceived({ accountId: "acc1", specialUse: ["drafts"] }, { id: null, messages: [enteteTb(e2.id)] });
   await ecouteurs.onMessage({ cmd: "envoyer" });
   verif(g.messages.has("7|ext1@exemple.be") && !g.messages.has("7|brouillon@exemple.be"), "mail de la boîte de réception envoyé, brouillon ignoré");
+  const env1 = t.ajouter("acc1", mail({ id: "envoi@entreprise.be", de: "info@entreprise.be", a: "client@x.be" }), new Date(), { usage: ["sent"], dossierChemin: "/Sent" });
+  await ecouteurs.onNewMailReceived({ accountId: "acc1", specialUse: ["sent"] }, { id: null, messages: [enteteTb(env1.id)] });
+  await ecouteurs.onMessage({ cmd: "envoyer" });
+  verif(g.envois.has("7|envoi@entreprise.be") && !g.messages.has("7|envoi@entreprise.be"), "dossier Envoyés → sens « envoye »");
+  await ecouteurs.onUpdated(Object.assign(enteteTb(env1.id), { tags: ["traite_iamail"] }), { tags: ["traite_iamail"] });
+  await ecouteurs.onMessage({ cmd: "envoyer" });
+  verif(!g.etats.some(x => (x.traites || []).some(r => r.message_id === "envoi@entreprise.be")), "étiquette sur un envoi → ignorée");
   verif(g.erreursSchema.length === 0, "conforme au contrat" + (g.erreursSchema.length ? " — " + g.erreursSchema.join(" | ") : ""));
 
   console.log("3. Gestes dans Thunderbird");

@@ -48,7 +48,7 @@ async function rafraichir() {
 $("btn-relier").addEventListener("click", async () => {
   let instance = $("instance").value.trim().replace(/\/+$/, "");
   if (!instance) return texte($("message"), "Indiquez l'adresse de GesEnt.", "erreur");
-  if (!/^https?:\/\//.test(instance)) instance = "https://" + instance;
+  if (!/^https?:\/\//.test(instance)) instance = (/^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(instance) ? "http://" : "https://") + instance;
   let origine;
   try { origine = new URL(instance).origin; } catch (e) { return texte($("message"), "Adresse invalide.", "erreur"); }
   // Permission d'hôte demandée ici (geste de l'utilisateur) : GesEnt n'envoie pas d'en-têtes CORS.

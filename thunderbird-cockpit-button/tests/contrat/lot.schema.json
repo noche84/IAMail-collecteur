@@ -420,6 +420,13 @@
               ]
             }
           }
+        },
+        "sens": {
+          "enum": [
+            "recu",
+            "envoye"
+          ],
+          "default": "recu"
         }
       },
       "if": {
