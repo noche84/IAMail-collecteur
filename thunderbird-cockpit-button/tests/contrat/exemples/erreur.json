@@ -1,0 +1,9 @@
+{
+  "erreur": {
+    "code": "hors_portee",
+    "message": "La boîte 9 n'est pas reliée à ce collecteur.",
+    "details": {
+      "boite_id": 9
+    }
+  }
+}

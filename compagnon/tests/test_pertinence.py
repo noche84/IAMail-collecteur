@@ -451,6 +451,45 @@ class Serveur(Base):
         self.assertEqual((st, json.loads(b)["n"], json.loads(b)["max"]), (200, 0, 300))
         self.assertEqual(self.cx.execute("SELECT ia_urgence FROM messages").fetchone()[0], "haute")
 
+    def test_relie_a_gesent_lecture_seule(self):
+        """Relié à GesEnt (annoncé par l'extension) : GesEnt fait foi, cockpit en lecture
+        seule, plus d'étiquette posée par le cockpit, plus d'appel IA local ; délié : retour."""
+        ext = {"Origin": "moz-extension://abc-123"}
+        self.cx.execute("UPDATE messages SET etat='traite'"); self.cx.commit()
+        st, _, b = self.req("POST", "/api/relie", {"relie": True, "gesent": "https://gesent.test",
+                                                   "boites": ["moi@ccl.be"]}, **ext)
+        self.assertEqual((st, json.loads(b)["relie"]), (200, True))
+        self.assertEqual(json.loads(self.req("GET", "/api/relie")[2])["gesent"], "https://gesent.test")
+        self.assertTrue(M.lire_relie(self.cfg)["relie"])                   # gardé sur disque
+        st, _, b = self.req("POST", "/api/action", {"id": "s1", "etat": None})
+        self.assertEqual((st, json.loads(b)["erreur"]), (409, "relie"))
+        for chemin, corps in (("/api/corriger", {"id": "s1", "quoi": "plus"}),
+                              ("/api/preciser", {"id": "s1", "texte": "x"}),
+                              ("/api/reglages", {"utilisateur": {"nom": "X"}}),
+                              ("/api/rejuger", {"jours": 7}),
+                              ("/api/sync/depuis-client", {"traites": [], "non_traites": ["s1"]})):
+            self.assertEqual(self.req("POST", chemin, corps, **ext)[0], 409, chemin)
+        self.assertEqual(self.req("POST", "/api/rejuger", {"jours": 7, "compter": True})[0], 200)
+        st, _, b = self.req("GET", "/api/sync/pour-client", **ext)
+        self.assertEqual(json.loads(b)["a_marquer"], [])                    # GesEnt pose l'étiquette
+        self.assertIn('id="relie"', self.req("GET", "/")[2].decode("utf-8"))
+        self.assertEqual(self.cx.execute("SELECT etat FROM messages").fetchone()[0], "traite")
+        appels = []
+        M.cmd_analyser_ia, garde = (lambda a: appels.append(a)), M.cmd_analyser_ia
+        M.cmd_import, garde_i = (lambda a: None), M.cmd_import
+        try:
+            M.pipeline_once(str(self.cfg_path), utiliser_ia=True)
+            self.assertEqual(appels, [])                                    # pas de double jugement
+            self.req("POST", "/api/relie", {"relie": False}, **ext)
+            M.pipeline_once(str(self.cfg_path), utiliser_ia=True)
+            self.assertEqual(len(appels), 1)
+        finally:
+            M.cmd_analyser_ia, M.cmd_import = garde, garde_i
+        self.assertEqual(json.loads(self.req("GET", "/api/sync/pour-client", **ext)[2])["a_marquer"], ["s1"])
+        self.assertEqual(self.req("POST", "/api/action", {"id": "s1", "etat": None})[0], 200)
+        st, _, b = self.req("POST", "/api/relie", {"relie": True, "gesent": "javascript:alert(1)"}, **ext)
+        self.assertIsNone(json.loads(b)["gesent"])                          # lien refusé
+
 
 class Envoyes(Base):
     """Dossier Envoyés (moteur 2.4) : rattachement aux fils, entrée IA, cockpit."""

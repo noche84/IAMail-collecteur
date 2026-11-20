@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "IAMail — cockpit + synchro",
-  "description": "Ouvre le cockpit IAMail et synchronise l'état « Traité » avec Thunderbird (étiquette + lu, suppression/déplacement), dans les deux sens.",
-  "version": "1.2.0",
+  "name": "IAMail — cockpit, synchro et GesEnt",
+  "description": "Ouvre le cockpit IAMail et synchronise « Traité » avec Thunderbird. Reliée à GesEnt, envoie chaque mail dès son arrivée (puis l'existant) et laisse GesEnt faire foi.",
+  "version": "2.0.0",
   "author": "Arnaud François",
   "browser_specific_settings": {
     "gecko": {
@@ -10,11 +10,16 @@
       "strict_min_version": "128.0"
     }
   },
-  "permissions": ["messagesRead", "messagesUpdate", "messagesTags", "accountsRead"],
+  "permissions": ["messagesRead", "messagesUpdate", "messagesTags", "accountsRead", "storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*"],
-  "background": { "scripts": ["background.js"] },
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "scripts": ["mime.js", "tri.js", "gesent.js", "background.js"] },
   "action": {
     "default_title": "Ouvrir le cockpit IAMail",
     "default_icon": "icon.svg"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   }
 }

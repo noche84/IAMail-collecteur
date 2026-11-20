@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -2876,10 +2876,48 @@ def alertes_reglages(cfg):
 ETIQUETTE_TRAITE = {"cle": "iamail_traite", "nom": "Traité IAMail", "couleur": "#12b76a"}
 
 
+# ----------------------------------------------------------------------------
+# Relié à GesEnt (extension Thunderbird, protocole v1) : GesEnt fait foi
+# ----------------------------------------------------------------------------
+def _chemin_relie(cfg):
+    return Path(cfg["base_sqlite"]).with_name("relie.json")
+
+
+def lire_relie(cfg):
+    """État « relié à GesEnt » annoncé par l'extension : {relie, gesent, boites, le}.
+    Relié : le cockpit local est en lecture seule et le compagnon n'appelle plus l'IA
+    (GesEnt juge ; pas de double coût)."""
+    try:
+        d = json.loads(_chemin_relie(cfg).read_text(encoding="utf-8"))
+        if isinstance(d, dict):
+            return {"relie": bool(d.get("relie")), "gesent": d.get("gesent") or None,
+                    "boites": [str(b) for b in (d.get("boites") or [])][:50], "le": d.get("le")}
+    except Exception:
+        pass
+    return {"relie": False, "gesent": None, "boites": [], "le": None}
+
+
+def enregistrer_relie(cfg, corps):
+    gesent = corps.get("gesent")
+    if gesent is not None and not (isinstance(gesent, str)
+                                   and re.match(r"^https?://[^\s<>\"']{1,200}$", gesent)):
+        gesent = None
+    d = {"relie": bool(corps.get("relie")), "gesent": gesent if corps.get("relie") else None,
+         "boites": [str(b)[:200] for b in (corps.get("boites") or []) if isinstance(b, str)][:50]
+         if corps.get("relie") else [],
+         "le": datetime.now(timezone.utc).isoformat()}
+    try:
+        _chemin_relie(cfg).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"[{NOM}] relie.json : {e}", file=sys.stderr)
+    return d
+
+
 def faire_cockpit_handler(cfg):
     db = cfg["base_sqlite"]
     etat_audio = {"chemin": None}
     etat_rejuge = {"en_cours": False}
+    etat_relie = lire_relie(cfg)
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -2964,7 +3002,8 @@ def faire_cockpit_handler(cfg):
                             "alertes": alertes_reglages(cfg),
                             "ia": {"fournisseur": cfg_ia.get("fournisseur", "mock"),
                                    "modele": cfg_ia.get("modele", "")},
-                            "rejuge_en_cours": etat_rejuge["en_cours"]})
+                            "rejuge_en_cours": etat_rejuge["en_cours"],
+                            "relie": etat_relie})
             elif u.path == "/audio":
                 ch = etat_audio["chemin"]
                 if ch and Path(ch).exists():
@@ -2976,6 +3015,11 @@ def faire_cockpit_handler(cfg):
                     self.wfile.write(data)
                 else:
                     self._json({"erreur": "pas d'audio"}, 404)
+            elif u.path == "/api/relie":
+                self._json(etat_relie)
+            elif u.path == "/api/sync/pour-client" and etat_relie["relie"]:
+                # Relié : c'est GesEnt qui pose l'étiquette, plus le cockpit local.
+                self._json({"etiquette": ETIQUETTE_TRAITE, "a_marquer": [], "a_demarquer": []})
             elif u.path == "/api/sync/pour-client":
                 # Ce que l'extension Thunderbird doit APPLIQUER dans la boîte.
                 cx = sqlite3.connect(db)
@@ -3005,6 +3049,17 @@ def faire_cockpit_handler(cfg):
             if not isinstance(c, dict):
                 return self._json({"erreur": "objet JSON attendu"}, 400)
             mid = c.get("id")
+            if self.path == "/api/relie":
+                etat_relie.clear()
+                etat_relie.update(enregistrer_relie(cfg, c))
+                return self._json({"ok": True, **etat_relie})
+            ecritures = ("/api/preciser", "/api/corriger", "/api/reglages", "/api/action",
+                         "/api/sync/confirme", "/api/sync/depuis-client")
+            if etat_relie["relie"] and (self.path in ecritures
+                                        or (self.path == "/api/rejuger" and not c.get("compter"))):
+                # Relié à GesEnt : GesEnt fait foi, le cockpit local est en lecture seule.
+                return self._json({"ok": False, "erreur": "relie", "gesent": etat_relie["gesent"],
+                                   "message": "Ce poste est relié à GesEnt : agissez dans GesEnt."}, 409)
             if self.path == "/api/topo-audio":
                 # POST (et non GET) : la génération peut appeler l'IA, donc coûter.
                 court, complet, source = construire_script_topo(
@@ -3182,6 +3237,10 @@ dialog label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
 dialog input[type=text],dialog textarea{width:100%;font:14px system-ui;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--tx)}
 dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;color:var(--mut);margin-top:4px}
 #topotexte{white-space:pre-wrap;font-size:13px;margin-top:8px}
+#relie{display:none;max-width:840px;margin:10px auto 0;padding:10px 14px;border:1px solid #abefc6;background:#ecfdf3;color:#085d3a;border-radius:10px;font-size:14px}
+#relie a{color:inherit;font-weight:600}
+body.relie #relie{display:block}
+body.relie .btns button:not([data-a="ouvrir"]),body.relie .prec,body.relie #reglages{display:none}
 </style></head><body>
 <header>
   <h1>🛩️ IAMail</h1>
@@ -3192,6 +3251,7 @@ dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;col
   <label class="ctl spacer">Retour d'absence depuis <input type="date" id="depuis"></label>
   <button id="reglages" title="Ta fonction, tes adresses">⚙ Réglages</button>
 </header>
+<div id="relie">🔗 Ce poste est <b>relié à GesEnt</b> : c'est là que l'on traite, délègue et corrige (GesEnt fait foi). Ce cockpit reste consultable, en lecture seule. <a id="relielien" target="_blank" rel="noopener">Ouvrir GesEnt</a></div>
 <div id="alerte"><div id="alertetexte"></div></div>
 <dialog id="dlg">
   <h1>Réglages — pour qui l'IA trie</h1>
@@ -3371,6 +3431,8 @@ api('/api/reglages').then(r=>alertes(r.alertes)).catch(()=>{});
 document.getElementById('nonlus').onchange=e=>{state.nonlus=e.target.checked;charger();};
 document.getElementById('depuis').onchange=e=>{state.depuis=e.target.value;
   document.getElementById('l-nonlus').style.display=(state.vue==='atraiter'&&!state.depuis)?'':'none';charger();};
+api('/api/relie').then(r=>{if(r&&r.relie){document.body.classList.add('relie');
+  const l=document.getElementById('relielien');if(r.gesent)l.href=r.gesent;else l.remove();}}).catch(()=>{});
 charger();
 </script></body></html>"""
 
@@ -3916,6 +3978,9 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
         cmd_analyser(types.SimpleNamespace(config=cfg_path, retout=False, silencieux=True))
     except Exception as e:
         print(f"[{NOM}] analyse: {e}")
+    if utiliser_ia and lire_relie(charger_config(cfg_path))["relie"]:
+        print(f"[{NOM}] relié à GesEnt : jugement IA fait par GesEnt (pas d'appel IA local)")
+        utiliser_ia = False
     if utiliser_ia:
         try:
             cmd_analyser_ia(types.SimpleNamespace(

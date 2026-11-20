@@ -24,9 +24,9 @@ on:
   push:
     tags: ["v*"]
     branches: [main]
-    paths: ["compagnon/**", "moteur/**", "empaquetage/**", ".github/workflows/executables.yml"]
+    paths: ["compagnon/**", "moteur/**", "empaquetage/**", "thunderbird-cockpit-button/**", ".github/workflows/executables.yml"]
   pull_request:
-    paths: ["compagnon/**", "moteur/**", "empaquetage/**", ".github/workflows/executables.yml"]
+    paths: ["compagnon/**", "moteur/**", "empaquetage/**", "thunderbird-cockpit-button/**", ".github/workflows/executables.yml"]
 
 permissions:
   contents: read
@@ -54,6 +54,18 @@ jobs:
         run: |
           python -I moteur/tests/run_conformance.py
           python -I compagnon/tests/test_pertinence.py
+
+      - uses: actions/setup-node@v6
+        if: runner.os == 'Linux'
+        with:
+          node-version: "22"
+
+      - name: Extension Thunderbird (tri JS, protocole GesEnt)
+        if: runner.os == 'Linux'
+        run: |
+          node thunderbird-cockpit-button/tests/conformite-tri.test.js
+          node thunderbird-cockpit-button/tests/protocole.test.js
+          node thunderbird-cockpit-button/tests/extension.test.js
 
       - name: Compiler les scripts Apple Mail (JXA)
         if: runner.os == 'macOS'
@@ -84,6 +96,8 @@ jobs:
           mkdir -p livraison
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
           cp "${{ matrix.exe }}" "livraison/iamail-${{ matrix.nom }}${ext}"
+          # L'extension Thunderbird (une seule fois : elle est la même partout).
+          if [ "${{ matrix.nom }}" = "linux-x64" ]; then bash thunderbird-cockpit-button/construire-xpi.sh livraison; fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -123,5 +137,5 @@ jobs:
             # --target : crée le tag sur le commit construit s'il n'existe pas encore.
             gh release create "$TAG" livraison/* --target "$GITHUB_SHA" \
               --title "IAMail $TAG" \
-              --notes "Exécutables autonomes du compagnon IAMail (moteur $MOTEUR). Voir empaquetage/README.md pour l'installation."
+              --notes "Exécutables autonomes du compagnon IAMail (moteur $MOTEUR) et extension Thunderbird (.xpi, client GesEnt). Voir empaquetage/README.md pour l'installation."
           fi

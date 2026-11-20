@@ -1,0 +1,15 @@
+{
+  "lot_id": "0b8f6a1e-3c1d-4f7e-9a51-6a3a4d2a9c11",
+  "deja_recu": false,
+  "messages": {
+    "nouveaux": 2,
+    "deja_connus": 0,
+    "a_televerser": 1
+  },
+  "gestes": {
+    "appliques": 1,
+    "en_attente": 0
+  },
+  "rejets": [],
+  "moteur_version_serveur": "2.3.0"
+}

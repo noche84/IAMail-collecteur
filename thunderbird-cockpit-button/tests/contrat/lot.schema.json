@@ -1,0 +1,489 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gesent/iaemail/v1/lot.schema.json",
+  "title": "Lot d'ingestion collecteur → GesEnt (protocole v1)",
+  "type": "object",
+  "required": [
+    "protocole",
+    "lot_id",
+    "emis_le",
+    "moteur_version"
+  ],
+  "properties": {
+    "protocole": {
+      "const": 1
+    },
+    "lot_id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F-]{36}$"
+    },
+    "emis_le": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "moteur_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "messages": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/message"
+      }
+    },
+    "gestes": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/geste"
+      }
+    },
+    "mode": {
+      "enum": [
+        "arrivee",
+        "rattrapage"
+      ],
+      "default": "arrivee"
+    }
+  },
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "required": [
+        "boite_id",
+        "message_id"
+      ],
+      "properties": {
+        "boite_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 998
+        }
+      }
+    },
+    "message": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ref"
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "format": {
+                    "const": "msg"
+                  }
+                },
+                "required": [
+                  "format"
+                ]
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "champs"
+                ]
+              },
+              {
+                "required": [
+                  "entetes"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "type": "object",
+      "required": [
+        "boite_id",
+        "message_id",
+        "recu_le",
+        "source",
+        "tri_local",
+        "etat_local"
+      ],
+      "properties": {
+        "boite_id": true,
+        "message_id": true,
+        "recu_le": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "entetes": {
+          "type": "object",
+          "properties": {
+            "de": {
+              "type": "string"
+            },
+            "a": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cc": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "objet": {
+              "type": "string"
+            },
+            "date": {
+              "type": "string"
+            }
+          }
+        },
+        "tri_local": {
+          "type": "object",
+          "required": [
+            "categorie",
+            "pour_moi",
+            "expediteur_humain",
+            "bulk",
+            "important",
+            "suspect",
+            "urgence",
+            "signaux"
+          ],
+          "properties": {
+            "categorie": {
+              "type": "string"
+            },
+            "pour_moi": {
+              "enum": [
+                0,
+                1,
+                null
+              ]
+            },
+            "expediteur_humain": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bulk": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "important": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "suspect": {
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "urgence": {
+              "enum": [
+                "critique",
+                "haute",
+                "normale",
+                "basse"
+              ]
+            },
+            "signaux": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cle_fil": {
+              "type": "string"
+            }
+          }
+        },
+        "etat_local": {
+          "type": "object",
+          "required": [
+            "dossier",
+            "lu",
+            "etiquette_traite"
+          ],
+          "properties": {
+            "dossier": {
+              "type": "string"
+            },
+            "lu": {
+              "type": "boolean"
+            },
+            "etiquette_traite": {
+              "type": "boolean"
+            }
+          }
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "format",
+            "sha256",
+            "taille"
+          ],
+          "properties": {
+            "format": {
+              "enum": [
+                "eml",
+                "msg"
+              ],
+              "default": "eml"
+            },
+            "origine": {
+              "enum": [
+                "brut",
+                "reconstruit"
+              ],
+              "default": "brut"
+            },
+            "encodage": {
+              "const": "gzip+base64"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "taille": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "donnees": {
+              "type": "string"
+            },
+            "a_televerser": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "encodage",
+                "donnees"
+              ],
+              "properties": {
+                "a_televerser": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "required": [
+                "a_televerser"
+              ],
+              "properties": {
+                "a_televerser": {
+                  "const": true
+                }
+              },
+              "not": {
+                "required": [
+                  "donnees"
+                ]
+              }
+            }
+          ]
+        },
+        "champs": {
+          "type": "object",
+          "required": [
+            "de"
+          ],
+          "properties": {
+            "de": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "adresse"
+                  ],
+                  "properties": {
+                    "adresse": {
+                      "type": "string"
+                    },
+                    "nom": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "a": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "adresse"
+                    ],
+                    "properties": {
+                      "adresse": {
+                        "type": "string"
+                      },
+                      "nom": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "cc": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "adresse"
+                    ],
+                    "properties": {
+                      "adresse": {
+                        "type": "string"
+                      },
+                      "nom": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "objet": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "in_reply_to": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "references": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "texte": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "html": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "a_televerser": {
+                "const": true
+              }
+            },
+            "required": [
+              "a_televerser"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "entetes"
+        ]
+      }
+    },
+    "geste": {
+      "type": "object",
+      "required": [
+        "boite_id",
+        "message_id",
+        "geste",
+        "le"
+      ],
+      "properties": {
+        "boite_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "geste": {
+          "enum": [
+            "traite",
+            "non_traite",
+            "supprime",
+            "deplace",
+            "etiquette"
+          ]
+        },
+        "le": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "utilisateur": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "machine": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

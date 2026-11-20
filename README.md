@@ -1,5 +1,9 @@
 # IAMail — Collecteur Thunderbird (v0)
 
+> **À jour** : l'extension à installer est `thunderbird-cockpit-button/` (cockpit, synchro
+> « Traité » et client GesEnt, `.xpi` joint aux releases) avec le compagnon `compagnon/`.
+> Le collecteur v0 ci-dessous (`src/`) est gardé pour mémoire.
+
 Extension Thunderbird (MailExtension, manifest v3, TB 128+) qui relève les
 nouveaux messages et les archive en `.eml` + `.json` jumeau, nommés de façon
 triable. **v0 : hors ligne, lecture seule.** Aucune écriture dans la boîte
