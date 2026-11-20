@@ -200,6 +200,15 @@ const avancer = (h, ms) => { h.t += ms; };
   verif(g.messages.has("9|perso1@exemple.be") && g.lots.size > 0, "le message arrive avant ses gestes (même lot, messages puis gestes)");
   verif(g.erreursSchema.length === 0, "synchro conforme aux schémas" + (g.erreursSchema.length ? " — " + g.erreursSchema.join(" | ") : ""));
 
+  console.log("6 bis. Balayage : arrivées non signalées par Thunderbird");
+  const silencieux = [0, 1, 2].map(i => t.ajouter("acc1", mail({ id: `silence-${i}@exemple.be` }), new Date(horloge.t - (i + 1) * 60e3)));
+  const nLots = g.lots.size;
+  const nb1 = await c.balayer();
+  verif(nb1 === 3, "3 mails relevés sans signal (lus sur un téléphone…) → mis en file");
+  await c.pomper();
+  verif(silencieux.every((e, i) => g.messages.has(`7|silence-${i}@exemple.be`)) && [...g.lots.values()].slice(nLots).every(x => x.lot.mode === "arrivee"), "envoyés comme des arrivées");
+  verif((await c.balayer()) === 0, "balayage suivant : rien n'est renvoyé");
+
   console.log("7. Portée retirée, jeton révoqué");
   g.boites = g.boites.filter(b => b.boite_id !== 9);
   g.pannes.push({ quand: "POST /lots", status: 403, code: "hors_portee", message: "La boîte 9 n'est pas reliée à ce collecteur." });

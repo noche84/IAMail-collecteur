@@ -196,6 +196,7 @@ async function cycle() {
   await synchroLocale();
   if (client.estRelie()) {
     if (tour % 20 === 1) { await client.rafraichir(); await client.chargerMoteur(false); dernierAvis = null; }   // ≈ 5 min (le compagnon a pu redémarrer)
+    if (tour % 4 === 1) await client.balayer();                                            // ≈ 1 min
     await client.pomper();
     await client.synchroTraite();
   }

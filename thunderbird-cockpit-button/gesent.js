@@ -65,6 +65,7 @@
     boites: [], etiquette: null, moteur: null,
     file: [], lotEnCours: null, attenteJusqua: 0, essais: 0,
     rattrapage: {}, etiquetes: {}, synth: {}, journal: [], rejets: [], dernierContact: null,
+    envoyes: {}, balayage: null,
   });
 
   class ClientGesEnt {
@@ -97,6 +98,11 @@
       if (oui) this.etat.etiquetes[cle] = 1; else delete this.etat.etiquetes[cle];
       const cles = Object.keys(this.etat.etiquetes);
       if (cles.length > 20000) for (const k of cles.slice(0, cles.length - 20000)) delete this.etat.etiquetes[k];
+    }
+    _envoye(cle) {                    // arrivées déjà reçues par GesEnt (balayage sans doublon)
+      this.etat.envoyes[cle] = 1;
+      const cles = Object.keys(this.etat.envoyes);
+      if (cles.length > 30000) for (const k of cles.slice(0, cles.length - 30000)) delete this.etat.envoyes[k];
     }
     boite(id) { return this.etat.boites.find(b => b.boite_id === id) || null; }
 
@@ -185,7 +191,8 @@
       }
       const c = r.corps;
       Object.assign(this.etat, { jeton: c.jeton, collecteur_id: c.collecteur_id, statut: "actif",
-        boites: c.boites || [], etiquette: c.etiquette || null, essais: 0, attenteJusqua: 0, rattrapage: {} });
+        boites: c.boites || [], etiquette: c.etiquette || null, essais: 0, attenteJusqua: 0, rattrapage: {},
+        balayage: this.etat.balayage || isoLocal(this.maintenant()) });
       this.noter("info", `Relié à ${this.etat.instance} (${this.etat.boites.length} boîte(s)).`);
       await this.sauver();
       await this.rafraichir();
@@ -310,7 +317,11 @@
       }
       const m = await this.preparer(entete, b);
       if (!m) return false;
-      if (this.etat.file.some(x => x.type === "message" && x.m.boite_id === m.boite_id && x.m.message_id === m.message_id)) return true;
+      if (this.etat.envoyes[cleRef(m.boite_id, m.message_id)]
+          || this.etat.file.some(x => x.type === "message" && x.m.boite_id === m.boite_id && x.m.message_id === m.message_id)) {
+        await this._oublierSources([{ type: "message", m }]);
+        return true;
+      }
       this.etat.file.push({ type: "message", mode: "arrivee", tbId: entete.id, compte: entete.compte, m });
       await this.sauver();
       this.planifier(REGROUPEMENT_MS);
@@ -487,11 +498,13 @@
         const messages = lot.items.filter(i => i.type === "message");
         messages.forEach((it, i) => {
           if (rejetes.has(i)) return;
+          if (it.mode === "arrivee") this._envoye(cleRef(it.m.boite_id, it.m.message_id));
           if (it.m.source.a_televerser) this.etat.file.push({ type: "source", ref: { boite_id: it.m.boite_id, message_id: it.m.message_id }, tbId: it.tbId, sha256: it.m.source.sha256, taille: it.m.source.taille, essais: 0 });
         });
         for (const rej of r.corps.rejets || []) {
           const it = rej.type === "message" ? messages[rej.index] : lot.items.filter(i => i.type === "geste")[rej.index];
           const ref = it ? (it.m || it.g) : {};
+          if (rej.type === "message" && it && it.mode === "arrivee") this._envoye(cleRef(it.m.boite_id, it.m.message_id));   // pas réessayé tel quel
           this.etat.rejets.unshift({ le: isoLocal(this.maintenant()), type: rej.type, code: rej.code, message: rej.message, message_id: ref.message_id });
           this.noter("erreur", `rejet ${rej.type} ${ref.message_id || ""} : ${rej.code}`);
         }
@@ -612,6 +625,35 @@
       const action = await this._subirErreur(r, "POST /sync/depuis-client");
       if (action === "abandonner") { const pris = new Set(items); this.etat.file = this.etat.file.filter(x => !pris.has(x)); return true; }
       return false;
+    }
+
+    // --- balayage : les arrivées que Thunderbird n'a pas signalées -------------------------------
+    // onNewMailReceived ne voit pas tout : mail relevé pendant que l'extension dormait, mail
+    // déjà lu sur un téléphone (plus « nouveau » pour IMAP), poste délié puis relié… Le
+    // balayage reprend la dernière heure avant le précédent passage (30 jours au plus) et met
+    // en file ce qui n'a pas encore été envoyé. Le rattrapage, lui, ne va que vers le passé.
+    async balayer() {
+      if (!this.estRelie() || !this.moteur) return 0;
+      const maintenant = this.maintenant().getTime();
+      const precedent = this.etat.balayage ? Date.parse(this.etat.balayage) : maintenant;
+      const depuis = new Date(Math.max(precedent - 3600e3, maintenant - 30 * 86400e3));
+      let n = 0;
+      for (const b of this.etat.boites.slice()) {
+        const comptes = await this.comptesDeBoite(b);
+        if (!comptes.length) continue;
+        for (const e of await this.env.tb.messagesEntre(comptes, depuis, new Date(maintenant + 60e3))) {
+          const mid = sansChevrons(e.messageIdTb);
+          if (mid && this.etat.envoyes[cleRef(b.boite_id, mid)]) continue;
+          if (this.etat.file.some(x => x.type === "message" && x.tbId === e.id)) continue;
+          const avant = this.etat.file.length;
+          await this.surArrivee(e);
+          if (this.etat.file.length > avant) n++;
+        }
+      }
+      this.etat.balayage = isoLocal(new Date(maintenant));
+      if (n) this.noter("info", `balayage : ${n} mail(s) arrivé(s) sans signal de Thunderbird, mis en file`);
+      await this.sauver();
+      return n;
     }
 
     // --- rattrapage de l'existant (après les arrivées, du plus récent au plus ancien) ------------

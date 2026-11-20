@@ -38,6 +38,10 @@ Contrat : `docs/iaemail-contrat-ingestion-v1.md` dans GesEnt (ADR 0051). Code : 
   de suite — source brute gzip+base64, sha256, `tri_local` — et mis dans une **file
   persistante**. Il part en lot (≤ 100 messages, ≤ 25 Mo) dans les 10 secondes. Un mail
   supprimé juste après son arrivée est donc quand même archivé.
+- **Balayage** (toutes les minutes) : ce que Thunderbird ne signale pas comme « nouveau »
+  (mail déjà lu sur un téléphone, relevé pendant que l'extension dormait, poste délié puis
+  relié) est retrouvé par date — depuis une heure avant le passage précédent, 30 jours au
+  plus — et envoyé comme une arrivée, sans doublon.
 - **Gros messages** (> 5 Mo compressés) : annoncés (`a_televerser`), puis `PUT /sources`.
 - **Historique** : après les arrivées en attente, du plus récent au plus ancien, 100 par
   lot, à faible cadence ; repris à `plus_ancien_recu` après une interruption.
