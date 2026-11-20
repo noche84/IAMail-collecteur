@@ -41,6 +41,10 @@ const avancer = (h, ms) => { h.t += ms; };
   await c.appairer("gesent.test", "k7q2-m9xd", [{ adresse: "info@entreprise.be", nom: "Accueil" }]);
   verif(c.etat.jeton === "iae_1_secret" && c.estRelie(), "jeton gardé, statut actif");
   verif(c.etat.instance === "https://gesent.test", "adresse complétée en https://");
+  const cl = new ClientGesEnt(environnement(fauxGesEnt(), fauxThunderbird()).env); await cl.charger();
+  g.codes["LOCAL001"] = true;
+  try { await cl.appairer("localhost:8000", "LOCAL001", []); } catch (e) {}
+  verif(cl.etat.instance === "http://localhost:8000", "recette locale : localhost:8000 → http://localhost:8000");
   verif(g.appairage.collecteur.machine === "PC-ACCUEIL-02" && g.appairage.collecteur.version === "2.0.0", "corps d'appairage (collecteur, comptes_locaux)");
   verif(c.etat.boites.find(b => b.boite_id === 7).relie === true, "GET /moi : relie et plus_ancien_recu rafraîchis");
   verif(c.moteur && c.etat.moteur.version === g.version, `moteur ${g.version} chargé (empreintes vérifiées)`);
@@ -208,6 +212,34 @@ const avancer = (h, ms) => { h.t += ms; };
   await c.pomper();
   verif(silencieux.every((e, i) => g.messages.has(`7|silence-${i}@exemple.be`)) && [...g.lots.values()].slice(nLots).every(x => x.lot.mode === "arrivee"), "envoyés comme des arrivées");
   verif((await c.balayer()) === 0, "balayage suivant : rien n'est renvoyé");
+
+  console.log("6 ter. Envoyés, introuvables, rangements détaillés (ajouts du 20 novembre)");
+  const pj = crypto.randomBytes(300000).toString("base64");
+  const envoi = t.ajouter("acc1", mail({ id: "envoi-1@entreprise.be", de: "Accueil <info@entreprise.be>", a: "jean.dupont@client.be",
+    objet: "RE: Fuite urgente", corps: pj, extra: "In-Reply-To: <AB12@exemple.be>\r\nReferences: <AB12@exemple.be>\r\n" }),
+    new Date(horloge.t - 30e3), { envoye: true, dossier: "Sent" });
+  const nLots2 = g.lots.size;
+  await c.balayer(); await c.pomper();
+  const lotEnvoi = [...g.lots.values()].slice(nLots2).find(x => x.lot.messages.some(m => m.sens === "envoye"));
+  const me = lotEnvoi && lotEnvoi.lot.messages.find(m => m.sens === "envoye");
+  verif(me && g.envois.has("7|envoi-1@entreprise.be") && !g.messages.has("7|envoi-1@entreprise.be"), "dossier Envoyés → sens « envoye », rangé à part (jamais « À traiter »)");
+  verif(me && me.source.origine === "reconstruit" && me.source.taille < 2000, "envoi : en-têtes seulement, pièce jointe de 400 ko non transmise");
+  verif(lotEnvoi && lotEnvoi.reponse.messages.envoyes === 1 && c.etat.journal.some(j => /1 envoi/.test(j.texte)), "réponse : messages.envoyes compté");
+  verif(g.erreursSchema.length === 0, "lot avec sens conforme au schéma" + (g.erreursSchema.length ? " — " + g.erreursSchema.join(" | ") : ""));
+  g.pourClient.a_marquer = [{ boite_id: 7, message_id: "supprime-localement@exemple.be" }, { boite_id: 7, message_id: "accepte@exemple.be" }];
+  const b3 = await c.synchroTraite();
+  verif(b3.introuvables === 1 && g.introuvables.length === 1 && g.introuvables[0].message_id === "supprime-localement@exemple.be", "message absent de Thunderbird → confirme.introuvables");
+  verif(g.pourClient.a_marquer.length === 0 && (await c.synchroTraite()).introuvables === 0, "… et plus redemandé ensuite");
+  const r1e = t.ajouter("acc1", mail({ id: "range-1@exemple.be" }), new Date(horloge.t - 3600e3));
+  const r2e = t.ajouter("acc1", mail({ id: "range-2@exemple.be" }), new Date(horloge.t - 3600e3));
+  await c.surRangement(r1e, { supprime: true });
+  await c.surRangement(r2e, { vers: "Clients/Dupont" });
+  await c.pomper();
+  const rg = g.etats.pop().ranges;
+  verif(rg.find(r => r.message_id === "range-1@exemple.be").geste === "supprime"
+    && rg.find(r => r.message_id === "range-2@exemple.be").geste === "deplace" && rg.find(r => r.message_id === "range-2@exemple.be").vers === "Clients/Dupont",
+    "ranges avec geste (supprime / deplace) et vers");
+  verif(g.erreursSchema.length === 0, "synchro conforme au schéma mis à jour" + (g.erreursSchema.length ? " — " + g.erreursSchema.join(" | ") : ""));
 
   console.log("7. Portée retirée, jeton révoqué");
   g.boites = g.boites.filter(b => b.boite_id !== 9);

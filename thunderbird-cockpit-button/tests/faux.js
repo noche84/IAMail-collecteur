@@ -24,7 +24,7 @@ function fauxGesEnt() {
     boites: [{ boite_id: 7, adresse: "info@entreprise.be", libelle: "Accueil", type: "partagee", relie: true, plus_ancien_recu: null },
              { boite_id: 9, adresse: "perso@entreprise.be", libelle: "Perso", type: "personnelle", relie: false, plus_ancien_recu: null }],
     etiquette: { cle: "traite_iamail", nom: "Traité IAMail", couleur: "#2E7D32" },
-    lots: new Map(), messages: new Map(), sources: new Map(), gestes: [], etats: [], confirmes: [],
+    lots: new Map(), messages: new Map(), envois: new Map(), introuvables: [], sources: new Map(), gestes: [], etats: [], confirmes: [],
     pourClient: { a_marquer: [], a_demarquer: [] }, pannes: [], journal: [], erreursSchema: [],
   };
   const repondre = (status, corps, entetes) => new Response(status === 204 || status === 304 ? null : (typeof corps === "string" ? corps : JSON.stringify(corps)),
@@ -84,7 +84,7 @@ function fauxGesEnt() {
       if ((lot.messages || []).length > 100) g.erreursSchema.push("lot de plus de 100 messages");
       if (lot.moteur_version.split(".")[0] !== g.version.split(".")[0]) return erreur(409, "moteur_incompatible", "majeure", { version_serveur: g.version });
       if (g.lots.has(lot.lot_id)) return repondre(200, Object.assign({}, g.lots.get(lot.lot_id).reponse, { deja_recu: true }));
-      const rep = { lot_id: lot.lot_id, deja_recu: false, messages: { nouveaux: 0, deja_connus: 0, a_televerser: 0 }, gestes: { appliques: 0, en_attente: 0 }, rejets: [], moteur_version_serveur: g.version };
+      const rep = { lot_id: lot.lot_id, deja_recu: false, messages: { nouveaux: 0, deja_connus: 0, a_televerser: 0, envoyes: 0 }, gestes: { appliques: 0, en_attente: 0 }, rejets: [], moteur_version_serveur: g.version };
       (lot.messages || []).forEach((m, i) => {
         if (!g.boites.some(b => b.boite_id === m.boite_id)) { rep.rejets.push({ type: "message", index: i, code: "hors_portee", message: "boîte" }); return; }
         if (g.rejeterId && m.message_id === g.rejeterId) { rep.rejets.push({ type: "message", index: i, code: "source_corrompue", message: "test" }); return; }
@@ -93,6 +93,7 @@ function fauxGesEnt() {
           if (sha(b) !== m.source.sha256 || b.length !== m.source.taille) { rep.rejets.push({ type: "message", index: i, code: "source_corrompue", message: "sha" }); return; }
         }
         const cle = m.boite_id + "|" + m.message_id;
+        if (m.sens === "envoye") { rep.messages.envoyes++; g.envois.set(cle, m); return; }   // index des envois, rien d'archivé
         if (g.messages.has(cle)) rep.messages.deja_connus++;
         else { rep.messages.nouveaux++; g.messages.set(cle, Object.assign({ mode: lot.mode || "arrivee" }, m)); }
         if (m.source.a_televerser) { rep.messages.a_televerser++; if (!g.sources.has(cle)) g.sources.set(cle, { sha256: m.source.sha256, recu: null }); }
@@ -126,7 +127,8 @@ function fauxGesEnt() {
       schema(def("confirme"), c, "confirme");
       g.confirmes.push(c);
       const k = r => r.boite_id + "|" + r.message_id;
-      const m = new Set((c.marques || []).map(k)), d = new Set((c.demarques || []).map(k));
+      g.introuvables.push(...(c.introuvables || []));
+      const m = new Set((c.marques || []).map(k).concat((c.introuvables || []).map(k))), d = new Set((c.demarques || []).map(k).concat((c.introuvables || []).map(k)));
       g.pourClient.a_marquer = g.pourClient.a_marquer.filter(r => !m.has(k(r)));
       g.pourClient.a_demarquer = g.pourClient.a_demarquer.filter(r => !d.has(k(r)));
       return repondre(204, null);

@@ -33,6 +33,9 @@
         },
         "a_televerser": {
           "type": "integer"
+        },
+        "envoyes": {
+          "type": "integer"
         }
       }
     },
