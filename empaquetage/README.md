@@ -55,7 +55,9 @@ exécutables sur des machines GitHub (Linux x64, Windows x64, Mac Apple, Mac Int
 
 - à chaque PR ou push qui touche `compagnon/`, `moteur/` ou `empaquetage/` : les
   exécutables sont téléchargeables dans l'onglet **Actions** (« artifacts », 30 jours) ;
-- à la demande : **Actions → Exécutables → Run workflow** ;
+- à la demande : **Actions → Exécutables → Run workflow**. Si on saisit une **version**
+  (`v1.19.1`), le workflow crée lui-même le tag et la release sur la branche
+  choisie : **un navigateur suffit**, sans clone du dépôt ;
 - sur un **tag** `vX.Y.Z` (`git tag v1.19.1 && git push origin v1.19.1`) : une
   **release GitHub** est publiée avec les exécutables, les installeurs et
   `config.exemple.json`. Les installeurs trouvent seuls `iamail-linux-x64` /
