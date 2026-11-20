@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -795,8 +795,10 @@ def repondu_apres(row, idx):
 
 
 def _collecteur(cfg):
-    """Collecteur configuré : 'thunderbird' (défaut, lit le mbox) ou 'outlook' (COM)."""
-    return (cfg.get("collecteur") or "thunderbird").lower()
+    """Collecteur configuré : 'thunderbird' (défaut, lit le mbox), 'outlook' (COM,
+    Windows) ou 'applemail' (Apple Events, macOS)."""
+    c = (cfg.get("collecteur") or "thunderbird").lower().replace(" ", "").replace("-", "")
+    return {"mail": "applemail", "applemail": "applemail", "mailmac": "applemail"}.get(c, c)
 
 
 def cmd_import(args):
@@ -818,6 +820,23 @@ def cmd_import(args):
                     print(f"[{NOM}] Envoyés : {n} nouveau(x) message(s) indexé(s).")
             except Exception as e:
                 print(f"[{NOM}] Envoyés Outlook illisibles : {e}", file=sys.stderr)
+            return
+        if _collecteur(cfg) == "applemail":
+            import collecteur_applemail as applemail
+            if not applemail.disponible():
+                raise SystemExit("Collecteur Apple Mail : réservé à macOS (osascript introuvable).")
+            try:
+                faits, doublons = applemail.relever(cfg, cx, sys.modules[__name__],
+                                                    limite=args.limite)
+            except applemail.MailErreur as e:
+                raise SystemExit(f"Apple Mail : {e}")
+            print(f"[{NOM}] Apple Mail : {faits} nouveau(x), {doublons} déjà connu(s).")
+            try:
+                n = applemail.relever_envoyes(cfg, cx, sys.modules[__name__])
+                if n:
+                    print(f"[{NOM}] Envoyés : {n} nouveau(x) message(s) indexé(s).")
+            except Exception as e:
+                print(f"[{NOM}] Envoyés Apple Mail illisibles : {e}", file=sys.stderr)
             return
         sources = [args.mbox] if args.mbox else cfg.get("mbox_sources", [])
         if not sources:
@@ -1229,8 +1248,8 @@ COLONNES_ANALYSE = {
     "tb_sync": "TEXT",   # état déjà appliqué dans le client (retour-mail bidirectionnel)
     "extrait": "TEXT",   # corps du mail en texte, pour l'analyse IA
     "ia_moteur_version": "TEXT",   # version du moteur qui a produit le jugement
-    "source_ref": "TEXT",   # réf. côté client (EntryID Outlook) pour le retour-mail
-    "source_type": "TEXT",  # collecteur d'origine : thunderbird | outlook
+    "source_ref": "TEXT",   # réf. côté client (EntryID Outlook, id Mail) pour le retour-mail
+    "source_type": "TEXT",  # collecteur d'origine : thunderbird | outlook | applemail
     "corrige_at": "TEXT",   # jugement corrigé à la main dans le cockpit : jamais rejugé d'office
     "precision": "TEXT",    # réponse de l'utilisateur à la question de l'IA (moteur 2.4)
     "precision_at": "TEXT",
@@ -2846,6 +2865,9 @@ def alertes_reglages(cfg):
         out.append("IA en mode bouchon (« mock ») : aucun vrai jugement, résumés = objets des mails.")
     elif not cfg_ia.get("cle"):
         out.append("Clé IA absente (MISTRAL_API_KEY) : le tri repose sur les seules règles.")
+    am = sys.modules.get("collecteur_applemail")
+    if _collecteur(cfg) == "applemail" and am is not None and am.DERNIERE_ERREUR:
+        out.append("Apple Mail : " + am.DERNIERE_ERREUR)
     return out
 
 
@@ -3902,8 +3924,9 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
             print(f"[{NOM}] (IA) {e}")
         except Exception as e:
             print(f"[{NOM}] IA: {e}")
-    # Retour-mail Outlook : l'agent applique « Traité » (étiquette + lu) et relit les
-    # changements faits dans Outlook — en direct, même processus, pas d'extension.
+    # Retour-mail Outlook / Apple Mail : l'agent applique « Traité » (étiquette ou
+    # drapeau + lu) et relit les changements faits dans le client — en direct, même
+    # processus, pas d'extension.
     try:
         cfg = charger_config(cfg_path)
         if _collecteur(cfg) == "outlook":
@@ -3914,8 +3937,16 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
                     outlook.appliquer_retour(cfg, cx, sys.modules[__name__])
                 finally:
                     cx.close()
+        elif _collecteur(cfg) == "applemail":
+            import collecteur_applemail as applemail
+            if applemail.disponible():
+                cx = connexion(cfg["base_sqlite"])
+                try:
+                    applemail.appliquer_retour(cfg, cx, sys.modules[__name__])
+                finally:
+                    cx.close()
     except Exception as e:
-        print(f"[{NOM}] retour Outlook: {e}")
+        print(f"[{NOM}] retour-mail: {e}")
 
 
 def cmd_service(args):

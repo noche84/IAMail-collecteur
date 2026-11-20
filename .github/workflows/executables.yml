@@ -8,6 +8,10 @@
 # - À la demande : onglet Actions → « Exécutables » → Run workflow. Si on y saisit une
 #   version (ex. v1.19.1), le workflow crée lui-même le tag et la release sur la
 #   branche choisie — rien à installer, un navigateur suffit.
+#
+# Les actions GitHub (checkout, setup-python, upload/download-artifact) sont du code
+# JavaScript exécuté par le runner : leur version majeure fixe la version de Node.js
+# utilisée (v4/v5 = Node 20, obsolète ; v6+ = Node 24). Le projet, lui, est en Python.
 name: Exécutables
 
 on:
@@ -39,9 +43,9 @@ jobs:
           - { os: macos-15-intel, nom: macos-x64,     exe: compagnon/dist/iamail }       # Mac Intel
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -50,6 +54,15 @@ jobs:
         run: |
           python -I moteur/tests/run_conformance.py
           python -I compagnon/tests/test_pertinence.py
+
+      - name: Compiler les scripts Apple Mail (JXA)
+        if: runner.os == 'macOS'
+        run: |
+          cd compagnon
+          python -I -c "import sys; sys.path.insert(0, '.'); import collecteur_applemail as A
+          for n in ('JXA_LISTER', 'JXA_SOURCES', 'JXA_RETOUR', 'JXA_ENVOYES'):
+              open('/tmp/' + n + '.js', 'w').write(getattr(A, n))"
+          for f in /tmp/JXA_*.js; do osacompile -l JavaScript -o "${f%.js}.scpt" "$f"; echo "OK $f"; done
 
       - name: Construire (Linux / macOS)
         if: runner.os != 'Windows'
@@ -72,7 +85,7 @@ jobs:
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
           cp "${{ matrix.exe }}" "livraison/iamail-${{ matrix.nom }}${ext}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: iamail-${{ matrix.nom }}
           path: livraison/*
@@ -85,8 +98,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: livraison
           merge-multiple: true
@@ -100,6 +113,7 @@ jobs:
           case "$TAG" in v[0-9]*) ;; *) echo "Version invalide : $TAG (attendu vX.Y.Z)"; exit 1;; esac
           cp empaquetage/installer-linux.sh empaquetage/desinstaller-linux.sh \
              empaquetage/installer-windows.ps1 empaquetage/desinstaller-windows.ps1 \
+             empaquetage/installer-macos.sh empaquetage/desinstaller-macos.sh \
              compagnon/config.exemple.json livraison/
           MOTEUR=$(python3 -c 'import json;print(json.load(open("moteur/manifest.json"))["version"])')
           if gh release view "$TAG" >/dev/null 2>&1; then
