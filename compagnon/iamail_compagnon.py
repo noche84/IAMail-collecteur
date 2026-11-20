@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.19.1"
+VERSION = "1.20.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -793,6 +793,8 @@ PARAMS = {
     "topo_fenetre_jours": 14,
     "topo_elements_max": 40,
     "ia_destinataires_max": 10,
+    "profil_ecrits_fenetre_jours": 90,
+    "precision_max": 500,
 }
 
 
@@ -1589,17 +1591,103 @@ def profils_expediteurs(cx):
     return profils, fils, attente
 
 
-def _profil_en_clair(profil):
-    """Phrase PROFIL pour l'IA (format entree.txt) ; vide si n = 0."""
-    if not profil or profil.get("n", 0) == 0:
+def profil_txt(n, recent=0, urgents=0, ecrits=0):
+    """Variable 'profil' de entree.txt — règle commune (README, vecteurs
+    tests/entree/profil.json). n compte le message jugé ; vide si n = 0.
+    Pourcentage arrondi au plus proche, .5 vers le haut, en entiers : Python arrondit
+    « au pair » (12.5 → 12) quand PHP donne 13 — les deux harnais divergeaient."""
+    n, recent, urgents, ecrits = (int(x or 0) for x in (n, recent, urgents, ecrits))
+    if n <= 0:
         return ""
-    pct = int(round(profil["pct_urgent"] * 100))
-    s = (f"{profil['n']} message(s) reçu(s), dont {profil.get('recent', 0)} ces "
+    pct = (200 * urgents + n) // (2 * n)
+    s = (f"{n} message(s) reçu(s), dont {recent} ces "
          f"{PARAMS['fenetre_recent_jours']} derniers jours, {pct} % au ton urgent")
-    if (profil["n"] >= PARAMS["profil_actif_n_min"]
-            and profil.get("recent", 0) >= PARAMS["profil_actif_recent_min"]):
+    if n >= PARAMS["profil_actif_n_min"] and recent >= PARAMS["profil_actif_recent_min"]:
         s += ", CORRESPONDANT RÉCURRENT ET ACTIF"
+    if ecrits >= 1:
+        s += (f", le destinataire lui a écrit {ecrits} fois ces "
+              f"{PARAMS.get('profil_ecrits_fenetre_jours', 90)} derniers jours")
     return s
+
+
+def _profil_en_clair(profil):
+    """Phrase PROFIL pour l'IA. Le compagnon ne lit pas encore le dossier Envoyés :
+    'ecrits' vaut 0 tant qu'il ne le fournit pas."""
+    if not profil:
+        return ""
+    return profil_txt(profil.get("n", 0), profil.get("recent", 0),
+                      profil.get("urgents", 0), profil.get("ecrits", 0))
+
+
+def _date_courte(iso, aujourdhui=None):
+    """'18 novembre', '1er novembre', '30 décembre 2025' (année si elle diffère de celle
+    du jour) ; '' si illisible."""
+    try:
+        d = datetime.strptime(str(iso or "").strip()[:10], "%Y-%m-%d").date()
+    except Exception:
+        return ""
+    try:
+        an = datetime.strptime(str(aujourdhui)[:10], "%Y-%m-%d").year if aujourdhui else datetime.now().year
+    except Exception:
+        an = datetime.now().year
+    txt = f"{'1er' if d.day == 1 else d.day} {_MOIS_ENTREE[d.month - 1]}"
+    return txt + (f" {d.year}" if d.year != an else "")
+
+
+def memoire_txt(sujet, n, chauds=0, dernier_envoi=None, aujourdhui=None):
+    """Variable 'memoire' de entree.txt — règle commune 2.4 (README, vecteurs
+    tests/entree/memoire.json). n = messages du fil, le message jugé compris ;
+    chauds = parmi les AUTRES ; dernier_envoi = dernière réponse du destinataire."""
+    n, chauds = int(n or 0), int(chauds or 0)
+    tete = f"fil « {str(sujet or '')[:60]} » : "
+    envoi = _date_courte(dernier_envoi, aujourdhui) if dernier_envoi else ""
+    if n >= 2:
+        txt = tete + f"{n - 1} autre(s) message(s) sur ce sujet"
+        if chauds > 0:
+            txt += f", dont {chauds} déjà jugé(s) important(s) ou urgent(s)"
+        return txt + (f", dernière réponse du destinataire le {envoi}" if envoi else "")
+    return (tete + f"dernière réponse du destinataire le {envoi}") if envoi else ""
+
+
+def precision_txt(texte, maximum=None):
+    """Variable 'precision' de entree.txt (2.4, vecteurs tests/entree/precision.json) :
+    compactée, coupée à precision_max sans points de suspension, fin nettoyée."""
+    m = int(maximum or PARAMS.get("precision_max", 500))
+    t = re.sub(r"\s+", " ", str(texte or "")).strip()[:m]
+    return t.rstrip(" .")
+
+
+def relances_k(recu_le, anterieurs, dernier_envoi=None, aujourdhui=None, fenetre=None):
+    """Nombre k de la variable 'relances' — règle commune 2.2.1 + 2.4 (vecteurs
+    tests/entree/relances.json). anterieurs = messages du même expéditeur et du même
+    fil : [{"date", "traite", "bulk"}]. Comptent ceux reçus avant le message jugé,
+    depuis moins de 'fenetre' jours (à la date du jour), encore à traiter, hors masse,
+    et — s'il y a une réponse du destinataire dans le fil — reçus APRÈS cette réponse."""
+    f = int(fenetre or PARAMS.get("relance_fenetre_jours", 14))
+
+    def jour(x):
+        return datetime.fromisoformat(str(x).replace("Z", "+00:00")) if x else None
+
+    recu = jour(recu_le)
+    ref = jour(aujourdhui) if aujourdhui else datetime.now(timezone.utc)
+    envoi = jour(dernier_envoi)
+    norm = lambda d: d if (d is None or d.tzinfo) else d.replace(tzinfo=timezone.utc)
+    recu, ref, envoi = norm(recu), norm(ref), norm(envoi)
+    k = 0
+    for m in anterieurs or []:
+        d = norm(jour(m.get("date")))
+        if (d is None or m.get("traite") or m.get("bulk") or (recu and d >= recu)
+                or (ref - d).days > f or (envoi and d <= envoi)):
+            continue
+        k += 1
+    return k
+
+
+def relances_phrase(k):
+    """Texte de la variable 'relances' pour k messages ; vide si k = 0."""
+    k = int(k or 0)
+    return (f"l'expéditeur a déjà écrit {k} fois ces {PARAMS.get('relance_fenetre_jours', 14)} "
+            f"derniers jours sans que ses messages soient traités") if k > 0 else ""
 
 
 def _memoire_fil(row, fils):
@@ -1617,10 +1705,8 @@ def _memoire_fil(row, fils):
         return ""
     urg = row.get("ia_urgence") or row.get("urgence") or ""
     chauds = f["chauds"] - (1 if (moi and _est_chaud(row.get("important"), urg)) else 0)
-    s = f"fil « {f['sujet'][:60]} » : {autres} autre(s) message(s) sur ce sujet"
-    if chauds > 0:
-        s += f", dont {chauds} déjà jugé(s) important(s) ou urgent(s)"
-    return s
+    # Le compagnon ne lit pas encore le dossier Envoyés : pas de 'dernier_envoi'.
+    return memoire_txt(f["sujet"], autres + 1, chauds, row.get("dernier_envoi"))
 
 
 def _relances_txt(row, attente):
@@ -1634,11 +1720,7 @@ def _relances_txt(row, attente):
         return ""
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
-    k = sum(1 for x in attente.get((spec, fkey), []) if x < d)
-    if k <= 0:
-        return ""
-    return (f"l'expéditeur a déjà écrit {k} fois ces {PARAMS.get('relance_fenetre_jours', 14)} "
-            f"derniers jours sans que ses messages soient traités")
+    return relances_phrase(sum(1 for x in attente.get((spec, fkey), []) if x < d))
 
 
 # ── Pour QUI l'on trie (moteur 2.2) ─────────────────────────────────────────
@@ -1921,6 +2003,7 @@ def construire_entree_ia(cfg, row, profil, fils, aujourdhui, attente=None, exemp
         "relances": _relances_txt(row, attente),
         "memoire": _memoire_fil(row, fils),
         "reponse_attendue": row.get("reponse_attendue") or "",   # pas de délégation en autonome
+        "precision": precision_txt(row.get("precision")),
         "pre_classement": _pre_classement_txt(row),
         "signaux": _signaux_txt(row.get("signaux")),
         "exemples": exemples or "",

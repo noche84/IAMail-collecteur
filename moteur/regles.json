@@ -141,6 +141,8 @@
     "ia_destinataires_max": 10,
     "topo_intervenants_max": 5,
     "relance_fenetre_jours": 14,
+    "profil_ecrits_fenetre_jours": 90,
+    "precision_max": 500,
     "fil_fenetre_jours": 90,
     "_fil_fenetre_regle": "Mémoire de fil (ligne MÉMOIRE de l'entrée IA) : seuls comptent les AUTRES messages du fil (jamais celui que l'on juge) reçus depuis moins de fil_fenetre_jours. Un autre message est « chaud » s'il est important OU si son urgence retenue (IA, sinon règles) est critique ou haute.",
     "exemples_max": 3,

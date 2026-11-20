@@ -1,0 +1,82 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.4) de la variable 'memoire'. Date du jour : 2026-11-20 (l'année de {date} n'est écrite que si elle diffère). n = messages du fil, le message jugé compris ; chauds = parmi les autres ; dernier_envoi = dernière réponse du destinataire dans le fil (date ou horodatage ISO : 10 premiers caractères). Sujet : 60 premiers caractères, sans autre nettoyage.",
+  "cas": [
+    {
+      "cas": "fil sans réponse",
+      "entree": {
+        "sujet": "Devis toiture",
+        "n": 3,
+        "chauds": 1
+      },
+      "attendu": "fil « Devis toiture » : 2 autre(s) message(s) sur ce sujet, dont 1 déjà jugé(s) important(s) ou urgent(s)"
+    },
+    {
+      "cas": "fil avec réponse",
+      "entree": {
+        "sujet": "Devis toiture",
+        "n": 3,
+        "chauds": 0,
+        "dernier_envoi": "2026-11-18T16:02:00+01:00"
+      },
+      "attendu": "fil « Devis toiture » : 2 autre(s) message(s) sur ce sujet, dernière réponse du destinataire le 18 novembre"
+    },
+    {
+      "cas": "chauds et réponse",
+      "entree": {
+        "sujet": "Devis toiture",
+        "n": 4,
+        "chauds": 2,
+        "dernier_envoi": "2026-11-19"
+      },
+      "attendu": "fil « Devis toiture » : 3 autre(s) message(s) sur ce sujet, dont 2 déjà jugé(s) important(s) ou urgent(s), dernière réponse du destinataire le 19 novembre"
+    },
+    {
+      "cas": "premier reçu après un envoi",
+      "entree": {
+        "sujet": "Offre chaudière",
+        "n": 1,
+        "chauds": 0,
+        "dernier_envoi": "2026-11-01"
+      },
+      "attendu": "fil « Offre chaudière » : dernière réponse du destinataire le 1er novembre"
+    },
+    {
+      "cas": "autre année",
+      "entree": {
+        "sujet": "Garantie",
+        "n": 2,
+        "chauds": 0,
+        "dernier_envoi": "2025-12-30"
+      },
+      "attendu": "fil « Garantie » : 1 autre(s) message(s) sur ce sujet, dernière réponse du destinataire le 30 décembre 2025"
+    },
+    {
+      "cas": "seul, sans envoi",
+      "entree": {
+        "sujet": "Bonjour",
+        "n": 1,
+        "chauds": 0
+      },
+      "attendu": ""
+    },
+    {
+      "cas": "envoi illisible : ignoré",
+      "entree": {
+        "sujet": "Devis toiture",
+        "n": 2,
+        "chauds": 0,
+        "dernier_envoi": "hier"
+      },
+      "attendu": "fil « Devis toiture » : 1 autre(s) message(s) sur ce sujet"
+    },
+    {
+      "cas": "sujet coupé à 60 caractères, tel quel (une espace finale peut rester)",
+      "entree": {
+        "sujet": "Réunion de coordination du chantier de l'école communale de Herve, phase 2",
+        "n": 2,
+        "chauds": 0
+      },
+      "attendu": "fil « Réunion de coordination du chantier de l'école communale de  » : 1 autre(s) message(s) sur ce sujet"
+    }
+  ]
+}
