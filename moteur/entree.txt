@@ -14,7 +14,8 @@ EXPÉDITEUR : {{expediteur}}
 {{/profil}}{{#relances}}RELANCE : {{relances}}
 {{/relances}}{{#memoire}}MÉMOIRE : {{memoire}}
 {{/memoire}}{{#reponse_attendue}}RÉPONSE ATTENDUE : {{reponse_attendue}}
-{{/reponse_attendue}}PRÉ-CLASSEMENT AUTOMATIQUE : {{pre_classement}}
+{{/reponse_attendue}}{{#precision}}PRÉCISION DU DESTINATAIRE : {{precision}}
+{{/precision}}PRÉ-CLASSEMENT AUTOMATIQUE : {{pre_classement}}
 SIGNAUX REPÉRÉS : {{signaux}}
 {{#exemples}}
 MESSAGES SEMBLABLES DÉJÀ CLASSÉS PAR UNE PERSONNE (jurisprudence) :

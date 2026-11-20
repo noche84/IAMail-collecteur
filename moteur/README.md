@@ -63,13 +63,14 @@ PHP du brief GesEnt).
 | `categories` | une ligne par catégorie **active**, dans l'ordre : `- {code} : {libelle}. {description} (urgence habituelle : {urgence_defaut})` |
 | `expediteur` | en-tête From décodé, nom affiché et adresse : `Nom <adresse>` (adresse seule s'il n'y a pas de nom) |
 | `expediteur_connu` | facultatif : GesEnt — contact ou fiche reconnus, ex. `client Dupont SRL` ; IAMail — `dans la liste des expéditeurs importants du destinataire` si c'est le cas |
-| `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif — vide si n = 0 |
-| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. **Règle commune (2.2.1)** : k = messages du **même expéditeur** (adresse, minuscules), du **même fil** (identifiant de fil du client s'il existe, sinon clé de fil normalisée), reçus **avant** le message jugé et depuis moins de `relance_fenetre_jours`, **encore à traiter** (ni traités, ni reportés), hors courrier de masse. Le comptage de tous les messages de l'expéditeur (ancienne règle GesEnt) est abandonné : le statut « traité » n'est pas assez fiable pour lui |
+| `profil` | facultatif : `{n} message(s) reçu(s), dont {recent} ces {fenetre_recent_jours} derniers jours, {pct} % au ton urgent` + `, CORRESPONDANT RÉCURRENT ET ACTIF` si actif (n ≥ `profil_actif_n_min` ET recent ≥ `profil_actif_recent_min`) + **(2.4)** `, le destinataire lui a écrit {ecrits} fois ces {profil_ecrits_fenetre_jours} derniers jours` si ecrits ≥ 1 — vide si n = 0. `n` compte le message jugé. `pct` = urgents × 100 / n arrondi **au plus proche, .5 vers le haut** (en entiers : `(200 × urgents + n) div (2 × n)`) — l'arrondi « bancaire » de Python donnait 12 % là où PHP donne 13 % (1 sur 8). `ecrits` = messages **envoyés par le destinataire** à cette adresse (À ou Cc) dans la fenêtre. Vecteurs : `tests/entree/profil.json` |
+| `relances` | facultatif : `l'expéditeur a déjà écrit {k} fois ces {relance_fenetre_jours} derniers jours sans que ses messages soient traités` si k > 0. **Règle commune (2.2.1)** : k = messages du **même expéditeur** (adresse, minuscules), du **même fil** (identifiant de fil du client s'il existe, sinon clé de fil normalisée), reçus **avant** le message jugé et depuis moins de `relance_fenetre_jours`, **encore à traiter** (ni traités, ni reportés), hors courrier de masse. Le comptage de tous les messages de l'expéditeur (ancienne règle GesEnt) est abandonné : le statut « traité » n'est pas assez fiable pour lui **(2.4)** : s'il existe une réponse du destinataire dans ce fil, seuls comptent les messages reçus **après** cette réponse ; sans réponse connue, rien ne change. Vecteurs : `tests/entree/relances.json` |
 | `reponse_attendue` | facultatif (2.3) : le message **répond à une affaire déléguée** par le destinataire. `délégué à {à qui} le {J} {mois} {AAAA}`, suivi éventuellement de `, suivi prévu le {J} {mois} {AAAA}` — `1er` pour le premier du mois, mois en minuscules ; `{à qui}` = nom affiché, sinon adresse, compacté. Fourni par le harnais quand il juge la réponse d'un tiers (ou d'un collègue) sur une délégation **avec suivi**. Vide → la ligne disparaît. Vecteurs : `tests/entree/reponse_attendue.json`. IAMail ne gère pas encore la délégation : toujours vide |
-| `memoire` | facultatif : `fil « {sujet} » : {autres} autre(s) message(s) sur ce sujet, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` (sans la fin si chauds = 0) — vide s'il n'y a aucun autre message. **2.2** : on ne compte que les AUTRES messages du fil (jamais celui que l'on juge), reçus depuis moins de `fil_fenetre_jours` ; « chaud » = `important` OU urgence retenue (IA, sinon règles) `critique`/`haute` |
+| `precision` | facultatif (2.4) : réponse de la personne à la question posée par l'IA sur ce message. Espaces consécutives compactées, espaces de début et de fin retirées, coupé à `precision_max` (500) caractères **sans** points de suspension, puis espaces et points finaux retirés. Vide → la ligne disparaît. Vecteurs : `tests/entree/precision.json` |
+| `memoire` | facultatif. Entrées : `n` = messages du fil reçus depuis moins de `fil_fenetre_jours`, **le message jugé compris** ; `chauds` = parmi les **autres**, ceux jugés importants ou d'urgence `critique`/`haute` (IA, sinon règles) ; **(2.4)** `dernier_envoi` = date du plus récent message **envoyé par le destinataire** dans ce fil, antérieur à la réception du message jugé. Rendu : n ≥ 2 → `fil « {sujet, 60 car.} » : {n−1} autre(s) message(s) sur ce sujet` + `, dont {chauds} déjà jugé(s) important(s) ou urgent(s)` si chauds > 0 + `, dernière réponse du destinataire le {date}` s'il y a un envoi ; n < 2 avec envoi → `fil « {sujet, 60 car.} » : dernière réponse du destinataire le {date}` ; n < 2 sans envoi → vide. `{date}` = `{J} {mois}` (`1er`, minuscules), plus ` {AAAA}` si l'année diffère de celle de la date du jour. Vecteurs : `tests/entree/memoire.json` |
 | `pre_classement` | éléments joints par `, ` dans cet ordre : `à moi` / `en copie` / `diffusion` ; `expéditeur humain` / `expéditeur automatique` ; `courrier de masse` si bulk ; `marqué important` si important ; `soupçon d'hameçonnage (Reply-To d'un autre domaine)` si suspect |
 | `signaux` | `aucun`, ou pour chaque signal : `« {expression} » ({niveau}, monte)` / `(…, baisse)` / `(…, monte — ignoré : expéditeur automatique ou masse)`, joints par `, ` |
-| `exemples` | facultatif (apprentissage) : messages semblables déjà classés ou corrigés par une personne, `exemples_max` au plus, une entrée par exemple : `- De <{adresse}> — « {objet, 120 car.} » — {extrait, 200 car.}` puis, à la ligne, `  → categorie: {code}, urgence: {code}` (+ `, action_attendue: false (le destinataire a indiqué que ce n'était pas à lui d'agir)` pour une correction « pas pour moi ») |
+| `exemples` | facultatif (apprentissage) : messages semblables déjà classés ou corrigés par une personne, `exemples_max` au plus, une entrée par exemple : `- De <{adresse}> — « {objet, 120 car.} » — {extrait, 200 car.}` puis, à la ligne, `  → categorie: {code}, urgence: {code}` (+ `, action_attendue: false (le destinataire a indiqué que ce n'était pas à lui d'agir)` pour une correction « pas pour moi ») **(2.4)** : un exemple qui porte une précision du destinataire ajoute la ligne `  → précision du destinataire : « {texte, 200 car.} »` ; une précision ne sert d'exemple que pour la **même boîte** (sur une boîte partagée, « c'est pour moi » ne vaut pas pour les collègues) |
 | `de`, `a`, `cc` | adresses nues ; `a` et `cc` joints par `, `, au plus `ia_destinataires_max`, puis ` et {n} autre(s)` |
 | `objet` | objet décodé |
 | `date_mail` | `AAAA-MM-JJ HH:MM` dans le fuseau de l'utilisateur |
@@ -86,6 +87,23 @@ Extensions actives : leurs propriétés s'ajoutent (`action`, `chantier`, `evene
 La **case du topo** (maintenant / cette semaine / ce mois) n'est pas demandée à
 l'IA : elle se **déduit** de l'urgence, de l'échéance et d'`action_attendue`
 (`regles.json` → `topo`), de la même façon partout.
+
+## Ce que le destinataire a envoyé (dossier Envoyés, 2.4)
+
+Proposé par GesEnt le 20/11/2026 (`docs/moteur-2.4-proposition.md`), écrit ici.
+
+- **Dossier Envoyés** : attribut IMAP SPECIAL-USE `\Sent` (RFC 6154) d'abord ; sinon le
+  premier nom trouvé parmi `Sent`, `Sent Items`, `Sent Messages`, `Éléments envoyés`,
+  `Envoyés`, `INBOX.Sent`, `[Gmail]/Sent Mail`, `[Gmail]/Messages envoyés` ; un réglage
+  de boîte peut l'imposer. Microsoft Graph : `sentitems` ; API Gmail : libellé `SENT`.
+  Collecteurs : le dossier Envoyés du compte.
+- **Rattachement d'un envoi à un fil** : par `In-Reply-To` puis `References` (un message
+  reçu de la même boîte) ; sinon même clé de fil **et** l'expéditeur du fil parmi les
+  destinataires (À, Cc) de l'envoi, dans `fil_fenetre_jours`.
+- **Dédoublonnage** par Message-ID (une réponse envoyée par GesEnt figure aussi dans les
+  Envoyés).
+- Usages dans l'entrée IA : `memoire` (`dernier_envoi`), `profil` (`ecrits`), `relances`
+  (comptées après la dernière réponse). Formats dans le tableau des variables.
 
 ## Bloc DESTINATAIRE (variable `utilisateur`, 2.2.1)
 

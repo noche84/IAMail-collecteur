@@ -1,8 +1,8 @@
 {
   "_commentaire": "Identité versionnée du moteur de tri partagé. Lu par chaque harnais (GesEnt PHP, compagnon Python). La version est inscrite dans chaque jugement et transmise à chaque ingestion (table moteur_versions côté GesEnt). Indépendante de la version d'un harnais. Toute modification d'un fichier listé → incrémenter 'version' et recalculer 'sha256' (README.md).",
   "nom": "moteur-tri-iaemail",
-  "version": "2.3.0",
-  "date": "2026-11-17",
+  "version": "2.4.0",
+  "date": "2026-11-20",
   "depot_reference": "noche84/gesent — resources/moteur/",
   "fichiers": [
     "prompt.txt",
@@ -17,9 +17,9 @@
     "extensions/portee.json"
   ],
   "sha256": {
-    "prompt.txt": "314bba17154333213660a56b5b2c69b7c3c00a1b4109cfc799d9f6df5f50998d",
-    "entree.txt": "16bc198712632ad56886ba0aeb72ee7bd6fd5c3f31c2605802907b15a07d68d7",
-    "regles.json": "684241dfa624a3b2ebc2a816d76fe6e1aed37f3fad53c3fc21d3ca6528b426dd",
+    "prompt.txt": "652e1bcc508786e30923ee7869481c9a8f0c6dc4e874faf68c3ec857f3fbfbc8",
+    "entree.txt": "50b87e21acced8b45450d1f4f5cbf49a8a7b4e556c05f5cf8872107443801d7f",
+    "regles.json": "d77dbba2881f8442313944e7ac9b611079dc51f03c7b39b0da5b563c97b02ea7",
     "taxonomie.json": "39ecd380f7f6ca36bf8b20d8e02e8a6c067c89cda32e548d3725083fefa9855b",
     "sortie.schema.json": "468396b03b48215ddcfbb0b453eb89b79eddb5217b3e0b333edca74cb73b20d0",
     "extensions/action.json": "b9b297370bc5c3742a797bc492f62226f7f1bb682359cff96ef137cbc6b7db99",
@@ -52,7 +52,11 @@
     "vecteurs": [
       "tests/entree/destinataire.json",
       "tests/entree/date_du_jour.json",
-      "tests/entree/reponse_attendue.json"
+      "tests/entree/reponse_attendue.json",
+      "tests/entree/memoire.json",
+      "tests/entree/profil.json",
+      "tests/entree/precision.json",
+      "tests/entree/relances.json"
     ]
   },
   "rupture_depuis_1x": [
@@ -92,6 +96,14 @@
       "entree.txt : nouvelle variable facultative 'reponse_attendue' (ligne RÉPONSE ATTENDUE après MÉMOIRE), format commun dans le README, vecteurs tests/entree/reponse_attendue.json. Fournie quand le message jugé répond à une délégation avec suivi ; vide sinon (entrée identique à la 2.2.1).",
       "prompt.txt : règle RÉPONSE ATTENDUE — reprise de l'affaire, action attendue, urgence toujours jugée sur le contenu. Le harnais ne force pas l'urgence.",
       "topo.txt : ligne facultative « Réponse attendue : … » par message ; ces messages sont annoncés en tête, après l'agenda."
+    ],
+    "2.4.0": [
+      "Dossier Envoyés : relève et rattachement au fil (In-Reply-To, References, sinon clé de fil + expéditeur parmi les destinataires), dédoublonnage par Message-ID (README, « Ce que le destinataire a envoyé »).",
+      "memoire : donnée 'dernier_envoi' (dernière réponse du destinataire dans le fil, antérieure au message jugé) ; rendu et cas n < 2 dans le README ; vecteurs tests/entree/memoire.json.",
+      "profil : donnée 'ecrits' (messages envoyés par le destinataire à cette adresse, fenêtre profil_ecrits_fenetre_jours = 90) ; pourcentage arrondi au plus proche, .5 vers le haut ; vecteurs tests/entree/profil.json.",
+      "relances : seuls les messages reçus après la dernière réponse du destinataire dans le fil comptent ; vecteurs tests/entree/relances.json.",
+      "precision : nouvelle variable (ligne PRÉCISION DU DESTINATAIRE après RÉPONSE ATTENDUE), precision_max = 500 ; vecteurs tests/entree/precision.json. Exemple portant une précision : ligne supplémentaire, même boîte seulement.",
+      "Tous ces ajouts sont facultatifs : sans Envoyés ni précision, l'entrée est identique à la 2.3 (sauf l'arrondi du pourcentage, aligné)."
     ]
   },
   "topo": "topo.txt"

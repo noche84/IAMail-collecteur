@@ -1,0 +1,78 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.4) de la variable 'profil', avec les paramètres par défaut (fenetre_recent_jours 30, profil_actif_n_min 5, profil_actif_recent_min 3, profil_ecrits_fenetre_jours 90). Entrée : n (message jugé compris), recent, urgents (nombre), ecrits. Pourcentage : (200 × urgents + n) div (2 × n), soit l'arrondi au plus proche, .5 vers le haut.",
+  "cas": [
+    {
+      "cas": "aucun message",
+      "entree": {
+        "n": 0
+      },
+      "attendu": ""
+    },
+    {
+      "cas": "premier message, sans écrit",
+      "entree": {
+        "n": 1,
+        "recent": 1,
+        "urgents": 0,
+        "ecrits": 0
+      },
+      "attendu": "1 message(s) reçu(s), dont 1 ces 30 derniers jours, 0 % au ton urgent"
+    },
+    {
+      "cas": "premier message d'une personne à qui l'on a écrit",
+      "entree": {
+        "n": 1,
+        "recent": 1,
+        "urgents": 0,
+        "ecrits": 2
+      },
+      "attendu": "1 message(s) reçu(s), dont 1 ces 30 derniers jours, 0 % au ton urgent, le destinataire lui a écrit 2 fois ces 90 derniers jours"
+    },
+    {
+      "cas": "correspondant actif et écrits",
+      "entree": {
+        "n": 6,
+        "recent": 3,
+        "urgents": 1,
+        "ecrits": 1
+      },
+      "attendu": "6 message(s) reçu(s), dont 3 ces 30 derniers jours, 17 % au ton urgent, CORRESPONDANT RÉCURRENT ET ACTIF, le destinataire lui a écrit 1 fois ces 90 derniers jours"
+    },
+    {
+      "cas": "arrondi : 1 sur 8 = 12,5 → 13",
+      "entree": {
+        "n": 8,
+        "recent": 0,
+        "urgents": 1
+      },
+      "attendu": "8 message(s) reçu(s), dont 0 ces 30 derniers jours, 13 % au ton urgent"
+    },
+    {
+      "cas": "arrondi : 3 sur 8 = 37,5 → 38",
+      "entree": {
+        "n": 8,
+        "recent": 2,
+        "urgents": 3
+      },
+      "attendu": "8 message(s) reçu(s), dont 2 ces 30 derniers jours, 38 % au ton urgent"
+    },
+    {
+      "cas": "arrondi : 1 sur 3 = 33,3 → 33",
+      "entree": {
+        "n": 3,
+        "recent": 3,
+        "urgents": 1
+      },
+      "attendu": "3 message(s) reçu(s), dont 3 ces 30 derniers jours, 33 % au ton urgent"
+    },
+    {
+      "cas": "seuil actif non atteint (récents)",
+      "entree": {
+        "n": 9,
+        "recent": 2,
+        "urgents": 0
+      },
+      "attendu": "9 message(s) reçu(s), dont 2 ces 30 derniers jours, 0 % au ton urgent"
+    }
+  ]
+}

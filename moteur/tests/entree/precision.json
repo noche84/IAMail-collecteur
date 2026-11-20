@@ -1,0 +1,45 @@
+{
+  "_commentaire": "Vecteurs communs (moteur 2.4) de la variable 'precision' (precision_max = 500) : espaces compactées, coupé à 500 caractères sans points de suspension, puis espaces et points finaux retirés.",
+  "cas": [
+    {
+      "cas": "vide",
+      "entree": {
+        "texte": ""
+      },
+      "attendu": "",
+      "longueur": 0
+    },
+    {
+      "cas": "absent",
+      "entree": {
+        "texte": null
+      },
+      "attendu": "",
+      "longueur": 0
+    },
+    {
+      "cas": "espaces et point final",
+      "entree": {
+        "texte": "  oui,   c'est pour moi. "
+      },
+      "attendu": "oui, c'est pour moi",
+      "longueur": 19
+    },
+    {
+      "cas": "retours à la ligne",
+      "entree": {
+        "texte": "Non.\n\nC'est pour\tPaul"
+      },
+      "attendu": "Non. C'est pour Paul",
+      "longueur": 20
+    },
+    {
+      "cas": "plus de 500 caractères : coupé sans points de suspension",
+      "entree": {
+        "texte": "Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. "
+      },
+      "attendu": "Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi midi. Oui, c'est pour moi : je dois envoyer le devis corrigé à Julie avant vendredi mi",
+      "longueur": 500
+    }
+  ]
+}

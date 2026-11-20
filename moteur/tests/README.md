@@ -65,4 +65,8 @@ Hors jeu `.eml` (les runners ne lisent que `cas/*.eml`) : petits fichiers JSON
 | `entree/destinataire.json` | variable `utilisateur` (IAMail : `bloc_destinataire()`) |
 | `entree/date_du_jour.json` | variable `date_du_jour` (IAMail : `_date_du_jour_txt()`) |
 | `entree/reponse_attendue.json` | variable `reponse_attendue` (IAMail : `reponse_attendue_txt()`, 2.3) |
+| `entree/memoire.json` | variable `memoire` avec `dernier_envoi` (IAMail : `memoire_txt()`, 2.4) |
+| `entree/profil.json` | variable `profil` avec `ecrits` et l'arrondi commun (IAMail : `profil_txt()`, 2.4) |
+| `entree/precision.json` | variable `precision` (IAMail : `precision_txt()`, 2.4) |
+| `entree/relances.json` | nombre `k` et texte de `relances`, comptés après la dernière réponse (IAMail : `relances_k()`, `relances_phrase()`, 2.4) |
 

@@ -200,6 +200,10 @@ class EntreeIa(Base):
         avec_ra = M.construire_entree_ia(self.cfg, dict(row, reponse_attendue=M.reponse_attendue_txt(
             "Marc Petit", "2026-11-12")), None, {}, "2026-11-16")
         self.assertIn("RÉPONSE ATTENDUE : délégué à Marc Petit le 12 novembre 2026\nPRÉ-CLASSEMENT", avec_ra)
+        self.assertNotIn("PRÉCISION", sans)
+        avec_p = M.construire_entree_ia(self.cfg, dict(row, precision="  oui, c'est pour moi. "),
+                                        None, {}, "2026-11-16")
+        self.assertIn("PRÉCISION DU DESTINATAIRE : oui, c'est pour moi\nPRÉ-CLASSEMENT", avec_p)
         self.assertIn("DATE DU JOUR : lundi 16 novembre 2026 (2026-11-16)\n\nNIVEAUX", sans)
         self.cfg["utilisateur"] = {"nom": "Arnaud", "fonction": "responsable informatique",
                                    "profil": "Urgent : panne qui bloque plusieurs collègues."}
@@ -241,6 +245,38 @@ class VecteursCommuns(unittest.TestCase):
         for c in cas:
             with self.subTest(c["cas"]):
                 self.assertEqual(M.reponse_attendue_txt(**c["entree"]), c["attendu"])
+
+    def _cas(self, nom):
+        return json.loads((self.DOSSIER / nom).read_text(encoding="utf-8"))["cas"]
+
+    def test_memoire(self):
+        for c in self._cas("memoire.json"):
+            e = c["entree"]
+            with self.subTest(c["cas"]):
+                self.assertEqual(M.memoire_txt(e["sujet"], e["n"], e.get("chauds", 0),
+                                               e.get("dernier_envoi"), "2026-11-20"), c["attendu"])
+
+    def test_profil(self):
+        for c in self._cas("profil.json"):
+            e = c["entree"]
+            with self.subTest(c["cas"]):
+                self.assertEqual(M.profil_txt(e["n"], e.get("recent", 0), e.get("urgents", 0),
+                                              e.get("ecrits", 0)), c["attendu"])
+
+    def test_precision(self):
+        for c in self._cas("precision.json"):
+            with self.subTest(c["cas"]):
+                self.assertEqual(M.precision_txt(c["entree"]["texte"]), c["attendu"])
+                self.assertLessEqual(len(c["attendu"]), 500)
+
+    def test_relances(self):
+        for c in self._cas("relances.json"):
+            e = c["entree"]
+            with self.subTest(c["cas"]):
+                k = M.relances_k(e["recu_le"], e["anterieurs"], e.get("dernier_envoi"),
+                                 "2026-11-20T12:00:00+01:00")
+                self.assertEqual(k, c["k"])
+                self.assertEqual(M.relances_phrase(k), c["attendu"])
 
     def test_date_du_jour(self):
         for c in json.loads((self.DOSSIER / "date_du_jour.json").read_text(encoding="utf-8"))["cas"]:
