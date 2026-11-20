@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Tests du compagnon 1.18 / moteur 2.2 (bibliothèque standard seule, aucun appel réseau :
+# Tests du compagnon 1.22 / moteur 2.4 (bibliothèque standard seule, aucun appel réseau :
 # l'IA est remplacée par un faux). Lancer :  python3 -I compagnon/tests/test_pertinence.py
 import http.client
 import importlib.util
@@ -28,6 +28,7 @@ def _charger(nom, fichier):
 
 M = _charger("iamail_compagnon", "iamail_compagnon.py")
 O = _charger("collecteur_outlook", "collecteur_outlook.py")
+A = _charger("collecteur_applemail", "collecteur_applemail.py")
 AUJ = datetime.now().strftime("%Y-%m-%d")
 
 
@@ -576,6 +577,113 @@ class Outlook(unittest.TestCase):
                                 "message_id": "id@x", "entetes": h})
         self.assertIn(b"List-Unsubscribe: <mailto:u@x.be>", eml)
         self.assertIn(b"Reply-To: autre@ailleurs.com", eml)
+
+
+SOURCE_MAC = ("From: Paul Client <paul@client.be>\r\nTo: moi@ccl.be\r\n"
+              "Subject: =?utf-8?q?Devis_r=C3=A9vis=C3=A9?=\r\n"
+              "Date: Tue, 17 Nov 2026 10:00:00 +0100\r\nMessage-ID: <d1@client.be>\r\n"
+              "Content-Type: text/plain; charset=utf-8\r\n\r\nPouvez-vous valider le devis ?\r\n")
+
+
+class AppleMail(Base):
+    """Collecteur Apple Mail : logique pure + JXA remplacé par un faux Mail."""
+
+    def setUp(self):
+        super().setUp()
+        self._jxa = A._jxa
+        self.appels = []
+        self.mail = [{"boite": "", "i": 0, "id": "101", "mid": "d1@client.be",
+                      "recu": "2026-11-17T09:00:00.000Z", "lu": False, "drapeau": -1}]
+
+        def faux(script, params, delai=600):
+            self.appels.append((script, params))
+            if script is A.JXA_LISTER:
+                return {"messages": self.mail}
+            if script is A.JXA_SOURCES:
+                return {"messages": [{"id": c["id"], "source": SOURCE_MAC, "lu": False,
+                                      "compte": "Embuild", "boite": "INBOX"}
+                                     for c in params["cibles"]]}
+            if script is A.JXA_RETOUR:
+                return {"faits": [a["id"] for a in params["actions"]]}
+            if script is A.JXA_ENVOYES:
+                return {"entetes": ["To: Paul <paul@client.be>\r\nSubject: RE: Devis\r\n"
+                                    "Date: Wed, 18 Nov 2026 14:00:00 +0100\r\n"
+                                    "Message-ID: <r1@ccl.be>\r\nIn-Reply-To: <d1@client.be>\r\n"]}
+            raise AssertionError("script inconnu")
+        A._jxa = faux
+
+    def tearDown(self):
+        A._jxa = self._jxa
+        super().tearDown()
+
+    def test_reglages(self):
+        self.assertEqual(A.drapeau({}), 3)
+        self.assertEqual(A.drapeau({"applemail_drapeau": "Bleu"}), 4)
+        self.assertEqual(A.drapeau({"applemail_drapeau": 0}), 0)
+        self.assertEqual(A.drapeau({"applemail_drapeau": "fuchsia"}), 3)
+        self.assertIsNone(A.depuis_iso({"applemail_jours": 0}))
+        now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+        self.assertTrue(A.depuis_iso({}, now).startswith("2026-09-21"))
+        self.assertEqual(M._collecteur({"collecteur": "Apple Mail"}), "applemail")
+        self.assertEqual(M._collecteur({"collecteur": "mail"}), "applemail")
+        self.assertIn("Automatisation", A.message_erreur("execution error: Not authorized (-1743)"))
+
+    def test_a_relever(self):
+        liste = [{"id": "1", "mid": "<a@x>"}, {"id": "2", "mid": "b@x"},
+                 {"id": "3", "mid": ""}, {"id": "3", "mid": ""}]
+        out, dbl = A.a_relever(liste, {"2"}, {"a@x"})
+        self.assertEqual(([e["id"] for e in out], dbl), (["3"], 3))
+
+    def test_releve_archive_et_indexe(self):
+        faits, dbl = A.relever(self.cfg, self.cx, M)
+        self.assertEqual((faits, dbl), (1, 0))
+        r = self.cx.execute("SELECT sujet, source_type, source_ref, non_lu, dossier_src, "
+                            "fichier_eml, extrait FROM messages WHERE message_id='d1@client.be'"
+                            ).fetchone()
+        self.assertEqual(r[:5], ("Devis révisé", "applemail", "101", 1, "Embuild/INBOX"))
+        self.assertTrue(Path(r[5]).read_bytes().startswith(b"From: Paul Client"))
+        self.assertIn("valider le devis", r[6])
+        # Second cycle : l'id Mail est connu, la source n'est pas relue.
+        self.appels.clear()
+        self.assertEqual(A.relever(self.cfg, self.cx, M), (0, 1))
+        self.assertEqual([a[0] for a in self.appels], [A.JXA_LISTER])
+
+    def test_envoyes(self):
+        self.assertEqual(A.relever_envoyes(self.cfg, self.cx, M), 1)
+        r = self.cx.execute("SELECT a, in_reply_to, source FROM envoyes "
+                            "WHERE message_id='r1@ccl.be'").fetchone()
+        self.assertEqual(r, ('["paul@client.be"]', "d1@client.be", "applemail"))
+
+    def test_retour_dans_les_deux_sens(self):
+        A.relever(self.cfg, self.cx, M)
+        q = "SELECT etat, tb_sync, non_lu FROM messages WHERE message_id='d1@client.be'"
+        # Cockpit → Mail : « Traité » pose le drapeau vert + lu.
+        self.cx.execute("UPDATE messages SET etat='traite' WHERE message_id='d1@client.be'")
+        self.cx.commit()
+        A.appliquer_retour(self.cfg, self.cx, M)
+        _, params = self.appels[-1]
+        self.assertEqual((params["actions"], params["drapeau"]),
+                         ([{"id": "101", "faire": "marquer"}], 3))
+        self.assertEqual(self.cx.execute(q).fetchone(), ("traite", "traite", 0))
+        # Mail → cockpit : drapeau retiré dans Mail → le mail revient à traiter.
+        self.mail[0].update(drapeau=-1, lu=True)
+        A.appliquer_retour(self.cfg, self.cx, M)
+        self.assertEqual(self.cx.execute(q).fetchone(), (None, None, 0))
+        # Drapeau vert posé dans Mail → traité au cockpit, sans rien renvoyer à Mail.
+        self.mail[0].update(drapeau=3)
+        self.appels.clear()
+        A.appliquer_retour(self.cfg, self.cx, M)
+        self.assertEqual(self.cx.execute(q).fetchone(), ("traite", "traite", 0))
+        self.assertEqual([a[0] for a in self.appels], [A.JXA_LISTER])
+        # Hors fenêtre (message disparu de la liste) : rien ne bouge.
+        self.mail.clear()
+        A.appliquer_retour(self.cfg, self.cx, M)
+        self.assertEqual(self.cx.execute(q).fetchone(), ("traite", "traite", 0))
+
+    def test_mail_ferme(self):
+        A._jxa = lambda script, params, delai=600: {"ferme": True}
+        self.assertEqual(A.relever(self.cfg, self.cx, M), (0, 0))
+        self.assertIsNone(A.appliquer_retour(self.cfg, self.cx, M))
 
 
 if __name__ == "__main__":

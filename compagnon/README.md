@@ -227,6 +227,14 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.22 — agent Apple Mail (macOS)
+
+- **`"collecteur": "applemail"`** : sur Mac, le compagnon pilote l'app **Mail** (Apple
+  Events, JXA) comme il pilote Outlook sous Windows — relève, retour-mail et Envoyés,
+  sans extension. « Traité » = **drapeau vert** + lu dans Mail (couleur réglable) ;
+  poser / retirer le drapeau dans Mail fait suivre le cockpit. Voir `AGENT-APPLEMAIL.md`.
+- Installeur Mac : `empaquetage/installer-macos.sh` (LaunchAgent, sans admin).
+
 ## Nouveautés 1.21 — dossier Envoyés et questions de l'IA (moteur 2.4)
 
 - **Dossier Envoyés** : relevé à chaque cycle (Thunderbird : fichier `Sent` / `Envoyés`

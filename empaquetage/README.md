@@ -27,26 +27,32 @@ la priorité sur la copie embarquée (pratique quand GesEnt publie une nouvelle 
 | OS | Commande |
 |----|----------|
 | Linux | `bash empaquetage/installer-linux.sh` |
+| macOS | `bash empaquetage/installer-macos.sh` |
 | Windows | `powershell -ExecutionPolicy Bypass -File empaquetage\installer-windows.ps1` |
 
 L'installeur :
-- copie l'exécutable (Linux : `~/.local/bin` ; Windows : `%LOCALAPPDATA%\IAMail`) ;
+- copie l'exécutable (Linux : `~/.local/bin` ; macOS : `~/Library/Application
+  Support/IAMail` ; Windows : `%LOCALAPPDATA%\IAMail`) ;
 - crée une **config** à personnaliser (boîte, adresses, dossiers) et un fichier de
   **clé IA** privé (facultatif — sans clé, mode dégradé sans IA) ;
 - installe le **démarrage automatique caché** (Linux : service utilisateur systemd ;
-  Windows : dossier Démarrage + lanceur `.vbs` sans fenêtre) ;
+  macOS : LaunchAgent ; Windows : dossier Démarrage + lanceur `.vbs` sans fenêtre) ;
 - ajoute un raccourci **« Cockpit IAMail »** (ouvre http://127.0.0.1:8740/).
 
-Désinstallation : `desinstaller-linux.sh` / `desinstaller-windows.ps1` (la config et
+Désinstallation : `desinstaller-linux.sh` / `desinstaller-macos.sh` /
+`desinstaller-windows.ps1` (la config et
 l'archive sont conservées).
 
 ## 3. État par plateforme
 
-- **Linux / macOS (Thunderbird)** : complet — relève du mbox, cockpit, retour-mail via
-  l'extension Thunderbird.
-- **Windows** : l'exécutable et l'installeur fonctionnent ; la **source des mails** est
-  aujourd'hui Thunderbird. Pour **Outlook classique** (la plupart des collègues),
-  l'**agent Outlook** est le prochain jalon — il alimentera le même compagnon.
+| Client mail | Poste | Source des mails | Retour-mail « Traité » |
+|-------------|-------|------------------|------------------------|
+| Thunderbird | Linux, macOS, Windows | lecture du mbox | étiquette, via l'extension `src/` |
+| Outlook classique | Windows | agent COM (`AGENT-OUTLOOK.md`) | catégorie « Traité IAMail » + lu |
+| Apple Mail | macOS | agent JXA (`AGENT-APPLEMAIL.md`) | drapeau vert + lu |
+
+Le choix se fait par `"collecteur"` dans la config (`thunderbird`, `outlook`,
+`applemail`). L'installeur macOS règle d'office `applemail`.
 
 ## 4. Pour distribuer — construction automatique (GitHub Actions)
 
@@ -61,7 +67,15 @@ exécutables sur des machines GitHub (Linux x64, Windows x64, Mac Apple, Mac Int
 - sur un **tag** `vX.Y.Z` (`git tag v1.19.1 && git push origin v1.19.1`) : une
   **release GitHub** est publiée avec les exécutables, les installeurs et
   `config.exemple.json`. Les installeurs trouvent seuls `iamail-linux-x64` /
-  `iamail-windows-x64.exe` posés à côté d'eux.
+  `iamail-macos-arm64` / `iamail-macos-x64` / `iamail-windows-x64.exe` posés à côté d'eux.
+
+Sur les Mac de GitHub, les scripts Apple Mail (JXA) sont aussi **compilés** à chaque
+construction : une faute de syntaxe y est arrêtée sans attendre un Mac réel.
+
+> **Node.js** : le projet n'en utilise pas. L'avertissement « Node.js 20 is
+> deprecated » visait les *actions* GitHub du workflow (checkout, setup-python,
+> upload/download-artifact), du code JavaScript dont la version majeure fixe la
+> version de Node. Elles sont maintenant en v7/v8, sur Node 24.
 
 Chaque exécutable passe `empaquetage/verifier-executable.py` : le moteur embarqué est
 celui du dépôt (`iamail --version` l'affiche), puis import d'un petit mbox, tri par les
