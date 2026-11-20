@@ -227,3 +227,20 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.21 — dossier Envoyés et questions de l'IA (moteur 2.4)
+
+- **Dossier Envoyés** : relevé à chaque cycle (Thunderbird : fichier `Sent` / `Envoyés`
+  deviné à côté de la boîte de réception, ou `envoyes_sources` ; Outlook : « Éléments
+  envoyés »). Index seulement, rien n'est archivé. Chaque envoi est rattaché à son fil
+  (In-Reply-To / References, sinon même objet **et** correspondant parmi les
+  destinataires). L'IA sait alors :
+  - que tu as déjà répondu dans ce fil (`MÉMOIRE … dernière réponse du destinataire le …`) ;
+  - que tu écris toi-même à cet expéditeur (`PROFIL … le destinataire lui a écrit k fois`) ;
+  - qu'une relance antérieure à ta réponse n'en est plus une.
+  Au cockpit, un message auquel tu as répondu porte **« ✓ tu as répondu le … »** : à toi
+  de le marquer Traité si l'affaire est close (jamais automatique).
+- **Questions de l'IA** : sous la question, deux réponses d'un clic (« Oui, c'est pour
+  moi », « Non, pour information ») ou quelques mots libres. La réponse est gardée, le
+  message est **rejugé** avec elle (un appel IA), et elle sert d'**exemple** pour les
+  messages semblables. Jamais de rejugement d'un classement corrigé à la main.
+

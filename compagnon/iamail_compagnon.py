@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.20.0"
+VERSION = "1.21.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -151,6 +151,18 @@ def connexion(chemin_db):
         )
     """)
     cx.execute("CREATE INDEX IF NOT EXISTS idx_corr_de ON corrections(de_adresse)")
+    if "precision" not in {r[1] for r in cx.execute("PRAGMA table_info(corrections)")}:
+        cx.execute("ALTER TABLE corrections ADD COLUMN precision TEXT")
+    # Messages ENVOYÉS par l'utilisateur (dossier Envoyés) : index seulement, pour savoir
+    # s'il a déjà répondu dans un fil et à qui il écrit (moteur 2.4).
+    cx.execute("""
+        CREATE TABLE IF NOT EXISTS envoyes (
+            message_id TEXT PRIMARY KEY, date_envoi TEXT, a TEXT, sujet TEXT,
+            cle_fil TEXT, in_reply_to TEXT, refs TEXT, source TEXT
+        )
+    """)
+    cx.execute("CREATE INDEX IF NOT EXISTS idx_env_fil ON envoyes(cle_fil)")
+    cx.execute("CREATE INDEX IF NOT EXISTS idx_env_date ON envoyes(date_envoi)")
     cx.execute("CREATE TABLE IF NOT EXISTS topo_cache "
                "(cle TEXT PRIMARY KEY, court TEXT, complet TEXT, at TEXT)")
     cx.commit()
@@ -620,6 +632,168 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
     return bilan
 
 
+# ── Dossier Envoyés (moteur 2.4) ────────────────────────────────────────────
+# Noms usuels du dossier Envoyés (README du moteur, « Ce que le destinataire a envoyé »).
+NOMS_ENVOYES = ("Sent", "Sent Items", "Sent Messages", "Sent Mail", "Éléments envoyés",
+                "Envoyés", "Messages envoyés")
+
+
+def _ids_entete(valeur):
+    """Message-ID listés dans In-Reply-To / References, sans chevrons."""
+    return [x.strip() for x in re.findall(r"<([^<>\s]+)>", str(valeur or ""))]
+
+
+def envois_depuis_mbox(cfg):
+    """Fichiers mbox du dossier Envoyés : 'envoyes_sources' de la config, sinon devinés
+    à côté de chaque 'mbox_sources' (même dossier, ou un sous-dossier *.sbd, ex.
+    [Gmail].sbd/Sent Mail)."""
+    if cfg.get("envoyes_sources"):
+        return [Path(x) for x in cfg["envoyes_sources"]]
+    vus, out = set(), []
+    for src in cfg.get("mbox_sources") or []:
+        dossier = Path(src).parent
+        candidats = [dossier] + [d for d in dossier.glob("*.sbd") if d.is_dir()]
+        for d in candidats:
+            for nom in NOMS_ENVOYES:
+                f = d / nom
+                if f.is_file() and f not in vus:
+                    vus.add(f)
+                    out.append(f)
+    return out
+
+
+def enregistrer_envoi(cx, message_id, date_iso, adresses, sujet, in_reply_to="",
+                      refs=None, source="mbox"):
+    """Indexe un message envoyé (dédoublonnage par Message-ID). Renvoie True si nouveau."""
+    mid = (message_id or "").strip().strip("<>")
+    if not mid:
+        return False
+    a = sorted({x.lower() for x in adresses if x and "@" in x})
+    cur = cx.execute(
+        "INSERT OR IGNORE INTO envoyes (message_id, date_envoi, a, sujet, cle_fil, "
+        "in_reply_to, refs, source) VALUES (?,?,?,?,?,?,?,?)",
+        (mid, date_iso, json.dumps(a), sujet or "", _sujet_fil(sujet),
+         (in_reply_to or "").strip().strip("<>"), json.dumps(refs or []), source))
+    return cur.rowcount == 1
+
+
+def importer_envoyes_mbox(cx, chemin):
+    """Indexe le dossier Envoyés d'un profil Thunderbird. Lecture seule ; aucun archivage
+    (le coffre-fort concerne le courrier reçu)."""
+    try:
+        boite = mailbox.mbox(str(chemin))
+    except Exception as e:
+        print(f"[{NOM}] Envoyés illisibles ({chemin}) : {e}", file=sys.stderr)
+        return 0
+    n = 0
+    try:
+        for cle in boite.iterkeys():
+            try:
+                m = boite.get_message(cle)
+            except Exception:
+                continue
+            d = _dt_message(_dec_entete(m.get("Date")) or "")
+            if d is not None and d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            adresses = []
+            for h in ("To", "Cc"):
+                for _, adr in email.utils.getaddresses([_dec_entete(m.get(h)) or ""]):
+                    adresses.append(adr)
+            irt = _ids_entete(m.get("In-Reply-To"))
+            if enregistrer_envoi(cx, _message_id(m), d.isoformat() if d else "", adresses,
+                                 _dec_entete(m.get("Subject")), irt[0] if irt else "",
+                                 _ids_entete(m.get("References")), "mbox"):
+                n += 1
+        cx.commit()
+    finally:
+        boite.close()
+    return n
+
+
+def index_envoyes(cx, maintenant=None):
+    """Ce que l'utilisateur a envoyé, prêt à interroger (règle du moteur 2.4) :
+    - fil_exact[cle_fil] = dates des envois rattachés par In-Reply-To / References à un
+      message reçu de ce fil ;
+    - fil_sujet[cle_fil] = [(date, {destinataires})] des autres envois (rattachés par la
+      clé de fil, à confirmer par l'expéditeur parmi les destinataires) ;
+    - ecrits[adresse] = envois à cette adresse depuis profil_ecrits_fenetre_jours."""
+    now = maintenant or datetime.now(timezone.utc)
+    f_ecrits = PARAMS.get("profil_ecrits_fenetre_jours", 90)
+    try:
+        lignes = cx.execute("SELECT date_envoi, a, cle_fil, in_reply_to, refs FROM envoyes").fetchall()
+    except sqlite3.Error:
+        lignes = []
+    if not lignes:
+        return {"fil_exact": {}, "fil_sujet": {}, "ecrits": {}}
+    ids = set()
+    for _, _, _, irt, refs in lignes:
+        if irt:
+            ids.add(irt)
+        ids.update(json.loads(refs or "[]"))
+    fil_de = {}
+    ids = list(ids)
+    for i in range(0, len(ids), 500):
+        lot = ids[i:i + 500]
+        for mid, sujet in cx.execute(
+                f"SELECT message_id, sujet FROM messages WHERE message_id IN ({','.join('?' * len(lot))})", lot):
+            fil_de[mid] = _sujet_fil(sujet)
+    fil_exact, fil_sujet, ecrits = {}, {}, {}
+    for date_envoi, a, cle_fil, irt, refs in lignes:
+        d = _dt_message(date_envoi)
+        if d is None:
+            continue
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        dest = set(json.loads(a or "[]"))
+        fils = {fil_de[x] for x in ([irt] if irt else []) + json.loads(refs or "[]") if x in fil_de}
+        if fils:
+            for k in fils:
+                if k:
+                    fil_exact.setdefault(k, []).append(d)
+        elif cle_fil:
+            fil_sujet.setdefault(cle_fil, []).append((d, dest))
+        if (now - d).days <= f_ecrits:
+            for adr in dest:
+                ecrits[adr] = ecrits.get(adr, 0) + 1
+    return {"fil_exact": fil_exact, "fil_sujet": fil_sujet, "ecrits": ecrits}
+
+
+def _envois_du_fil(row, idx):
+    """Dates des envois de l'utilisateur rattachés au fil de ce message (règle 2.4)."""
+    fkey = _sujet_fil(row.get("sujet"))
+    if not fkey or not idx:
+        return []
+    spec = (_adresses_spec(row.get("de_adresse") or row.get("de") or "") or [""])[0]
+    out = list(idx["fil_exact"].get(fkey, []))
+    out += [d for d, dest in idx["fil_sujet"].get(fkey, []) if spec and spec in dest]
+    return out
+
+
+def dernier_envoi(row, idx, maintenant=None):
+    """Dernière réponse de l'utilisateur dans le fil, ANTÉRIEURE au message, dans
+    fil_fenetre_jours ; ISO ou None."""
+    d0 = _dt_message(row.get("date_mail") or row.get("date"))
+    if d0 is None:
+        return None
+    if d0.tzinfo is None:
+        d0 = d0.replace(tzinfo=timezone.utc)
+    now = maintenant or datetime.now(timezone.utc)
+    f = PARAMS.get("fil_fenetre_jours", 90)
+    c = [d for d in _envois_du_fil(row, idx) if d < d0 and (now - d).days <= f]
+    return max(c).isoformat() if c else None
+
+
+def repondu_apres(row, idx):
+    """Réponse de l'utilisateur POSTÉRIEURE à ce message (badge « Tu as répondu ») ; ISO ou None."""
+    d0 = _dt_message(row.get("date_mail") or row.get("date"))
+    if d0 is None:
+        return None
+    if d0.tzinfo is None:
+        d0 = d0.replace(tzinfo=timezone.utc)
+    c = [d for d in _envois_du_fil(row, idx) if d > d0]
+    return max(c).isoformat() if c else None
+
+
 def _collecteur(cfg):
     """Collecteur configuré : 'thunderbird' (défaut, lit le mbox) ou 'outlook' (COM)."""
     return (cfg.get("collecteur") or "thunderbird").lower()
@@ -638,6 +812,12 @@ def cmd_import(args):
             faits, doublons = outlook.relever(cfg, cx, sys.modules[__name__],
                                               limite=args.limite)
             print(f"[{NOM}] Outlook : {faits} nouveau(x), {doublons} déjà connu(s).")
+            try:
+                n = outlook.relever_envoyes(cfg, cx, sys.modules[__name__])
+                if n:
+                    print(f"[{NOM}] Envoyés : {n} nouveau(x) message(s) indexé(s).")
+            except Exception as e:
+                print(f"[{NOM}] Envoyés Outlook illisibles : {e}", file=sys.stderr)
             return
         sources = [args.mbox] if args.mbox else cfg.get("mbox_sources", [])
         if not sources:
@@ -646,6 +826,10 @@ def cmd_import(args):
             )
         for src in sources:
             importer_mbox(cfg, cx, src, limite=args.limite)
+        if not args.mbox:
+            n = sum(importer_envoyes_mbox(cx, f) for f in envois_depuis_mbox(cfg))
+            if n:
+                print(f"[{NOM}] Envoyés : {n} nouveau(x) message(s) indexé(s).")
     finally:
         cx.close()
 
@@ -1048,6 +1232,8 @@ COLONNES_ANALYSE = {
     "source_ref": "TEXT",   # réf. côté client (EntryID Outlook) pour le retour-mail
     "source_type": "TEXT",  # collecteur d'origine : thunderbird | outlook
     "corrige_at": "TEXT",   # jugement corrigé à la main dans le cockpit : jamais rejugé d'office
+    "precision": "TEXT",    # réponse de l'utilisateur à la question de l'IA (moteur 2.4)
+    "precision_at": "TEXT",
 }
 
 
@@ -1583,7 +1769,9 @@ def profils_expediteurs(cx):
             if _est_chaud(imp, urg):
                 f["chauds"] += 1
 
-    for p in profils.values():
+    ecrits = index_envoyes(cx, now)["ecrits"]
+    for spec, p in profils.items():
+        p["ecrits"] = ecrits.get(spec, 0)
         p["pct_urgent"] = round(p["urgents"] / p["n"], 2) if p["n"] else 0.0
         p["fil_principal"] = (max(p["_fils"].items(), key=lambda kv: kv[1])
                               if p["_fils"] else None)
@@ -1720,7 +1908,11 @@ def _relances_txt(row, attente):
         return ""
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
-    return relances_phrase(sum(1 for x in attente.get((spec, fkey), []) if x < d))
+    envoi = _dt_message(row.get("dernier_envoi")) if row.get("dernier_envoi") else None
+    if envoi is not None and envoi.tzinfo is None:
+        envoi = envoi.replace(tzinfo=timezone.utc)
+    return relances_phrase(sum(1 for x in attente.get((spec, fkey), [])
+                               if x < d and (envoi is None or x > envoi)))
 
 
 # ── Pour QUI l'on trie (moteur 2.2) ─────────────────────────────────────────
@@ -1833,12 +2025,13 @@ def exemples_pertinents(cx, row):
     try:
         lignes = cx.execute(
             "SELECT message_id, de_adresse, domaine, sujet, mots, extrait, categorie, "
-            "urgence, action_attendue, concerne FROM corrections ORDER BY id DESC LIMIT 300"
+            "urgence, action_attendue, concerne, precision FROM corrections "
+            "ORDER BY id DESC LIMIT 300"
         ).fetchall()
     except sqlite3.Error:
         return []
     vus, notes = set(), []
-    for mid, de, d2, sujet, m2, extrait, cat, urg, action, concerne in lignes:
+    for mid, de, d2, sujet, m2, extrait, cat, urg, action, concerne, precision in lignes:
         if mid in vus or mid == row.get("message_id"):
             continue                      # la correction la plus récente d'un mail l'emporte
         vus.add(mid)
@@ -1848,7 +2041,8 @@ def exemples_pertinents(cx, row):
             score += int(round(40 * len(mots & siens) / len(mots | siens)))
         if score >= 30:
             notes.append((score, {"de": de, "sujet": sujet, "extrait": extrait, "categorie": cat,
-                                  "urgence": urg, "action": action, "concerne": concerne}))
+                                  "urgence": urg, "action": action, "concerne": concerne,
+                                  "precision": precision}))
     notes.sort(key=lambda x: -x[0])
     return [e for _, e in notes[:int(PARAMS.get("exemples_max", 3))]]
 
@@ -1860,8 +2054,11 @@ def _exemples_txt(exs):
         suite = f"categorie: {e['categorie'] or 'autre'}, urgence: {e['urgence'] or 'normale'}"
         if e.get("concerne") == "autre" or e.get("action") == 0:
             suite += ", action_attendue: false (le destinataire a indiqué que ce n'était pas à lui d'agir)"
-        out.append(f"- De <{e['de'] or ''}> — « {(e['sujet'] or '')[:120]} » — "
-                   f"{(e['extrait'] or '')[:200]}\n  → {suite}")
+        ligne = (f"- De <{e['de'] or ''}> — « {(e['sujet'] or '')[:120]} » — "
+                 f"{(e['extrait'] or '')[:200]}\n  → {suite}")
+        if e.get("precision"):            # moteur 2.4 : la réponse de la personne voyage avec
+            ligne += f"\n  → précision du destinataire : « {e['precision'][:200]} »"
+        out.append(ligne)
     return "\n".join(out)
 
 
@@ -2120,10 +2317,10 @@ def _config_ia(cfg):
 COLS_SELECTION_IA = ["message_id", "de_adresse", "sujet", "date_mail", "pour_moi", "bulk",
                      "expediteur_humain", "important", "suspect", "categorie", "urgence",
                      "extrait", "destinataires", "copies", "pieces_jointes", "signaux",
-                     "ia_urgence"]
+                     "ia_urgence", "precision"]
 
 
-def selection_ia(cx, retout=False, jours=0, limite=None):
+def selection_ia(cx, retout=False, jours=0, limite=None, ids=None):
     """Messages qui seraient envoyés à l'IA : classés, jamais corrigés à la main,
     hors masse non importante (regles.selection_ia), pas encore jugés (sauf retout),
     reçus depuis 'jours' jours (0 = tous), du plus récent au plus ancien."""
@@ -2135,9 +2332,13 @@ def selection_ia(cx, retout=False, jours=0, limite=None):
     cond_source = "" if retout else "ia_source IS NULL AND "
     filtre_masse = (" AND (bulk=0 OR important=1)"
                     if SELECTION_IA.get("ignorer_masse_non_importante", True) else "")
+    filtre_ids = ""
+    if ids:
+        filtre_ids = f" AND message_id IN ({','.join('?' * len(ids))})"
+        params += list(ids)
     sql = ("SELECT " + ", ".join(COLS_SELECTION_IA) + " FROM messages WHERE " + cond_source
            + "categorie IS NOT NULL AND corrige_at IS NULL"
-           + filtre_masse + filtre_date + " ORDER BY date_mail DESC")
+           + filtre_masse + filtre_date + filtre_ids + " ORDER BY date_mail DESC")
     if limite:
         sql += f" LIMIT {int(limite)}"
     return cx.execute(sql, params).fetchall()
@@ -2171,7 +2372,8 @@ def cmd_analyser_ia(args):
 
     jours = args.jours if args.jours is not None else cfg.get("ia_jours", 0)
     cols = COLS_SELECTION_IA
-    rows = selection_ia(cx, getattr(args, "retout", False), jours, args.limite)
+    rows = selection_ia(cx, getattr(args, "retout", False), jours, args.limite,
+                        getattr(args, "ids", None))
     if getattr(args, "compter", False):
         print(f"[{NOM}] {len(rows)} message(s) seraient envoyés à l'IA "
                f"({fournisseur}). Aucun appel effectué (--compter).")
@@ -2192,8 +2394,10 @@ def cmd_analyser_ia(args):
 
     faits, erreurs, questions, pannes = 0, 0, 0, 0
     t0 = time.time()
+    envois = index_envoyes(cx)
     for r in rows:
         row = dict(zip(cols, r))
+        row["dernier_envoi"] = dernier_envoi(row, envois)   # moteur 2.4 (dossier Envoyés)
         spec = (_adresses_spec(row["de_adresse"] or "") or [""])[0]
         profil = profils.get(spec)
         res, err = None, None
@@ -2434,14 +2638,17 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
             conds.append("(non_lu=1 OR non_lu IS NULL)")
     cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance", "ia_urgence",
             "question", "non_lu", "ia_source", "urgence", "pour_moi", "important",
-            "ia_action", "justification", "ia_extensions", "raison", "corrige_at"]
+            "ia_action", "justification", "ia_extensions", "raison", "corrige_at",
+            "precision"]
     rows = cx.execute(
         f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
             ia_echeance, ia_urgence, ia_question, non_lu, ia_source, urgence, pour_moi,
-            important, ia_action, ia_justification, ia_extensions, raison, corrige_at
+            important, ia_action, ia_justification, ia_extensions, raison, corrige_at,
+            precision
             FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC
             {'LIMIT 500' if vue == 'masse' else ''}""",
         params).fetchall()
+    envois = index_envoyes(cx)                # dossier Envoyés : « tu as répondu »
     cx.close()
     aujourdhui = datetime.now().strftime("%Y-%m-%d")
     demain = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -2474,6 +2681,11 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
             it["case_topo"] = "agenda"
         d = _local(_dt_message(it["date"]))
         it["date_txt"] = d.strftime("%d/%m %H:%M") if d else ""
+        # Une réponse de l'utilisateur APRÈS ce message : proposé comme traité, jamais
+        # classé tout seul (il peut avoir répondu « je regarde et je reviens »).
+        rep_ = repondu_apres({"sujet": it["sujet"], "de_adresse": it["de"], "date_mail": it["date"]}, envois)
+        dr = _local(_dt_message(rep_)) if rep_ else None
+        it["repondu"] = dr.strftime("%d/%m %H:%M") if dr else None
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
@@ -2540,6 +2752,41 @@ def corriger_jugement(cx, mid, quoi):
          ext.get("concerne"), json.dumps(avant, ensure_ascii=False), maintenant))
     cx.commit()
     return True
+
+
+def preciser(cx, mid, texte):
+    """Réponse de l'utilisateur à la question de l'IA (moteur 2.4). Gardée sur le message,
+    retenue comme exemple pour les messages semblables. Renvoie True si le message doit
+    être rejugé avec elle : jamais un jugement corrigé à la main."""
+    t = precision_txt(texte)
+    if not t:
+        return False
+    r = cx.execute(
+        "SELECT de_adresse, sujet, extrait, categorie, urgence, pour_moi, important, "
+        "ia_source, ia_categorie, ia_urgence, ia_action, ia_extensions, corrige_at "
+        "FROM messages WHERE message_id=?", (mid,)).fetchone()
+    if not r:
+        return False
+    (de, sujet, extrait, cat_r, urg_r, pour_moi, important,
+     src, cat_ia, urg_ia, action_ia, ext_json, corrige_at) = r
+    maintenant = datetime.now(timezone.utc).isoformat()
+    cx.execute("UPDATE messages SET precision=?, precision_at=? WHERE message_id=?",
+               (t, maintenant, mid))
+    juge = _juge_par_ia(src) and bool(urg_ia)
+    spec = (_adresses_spec(de or "") or [""])[0]
+    dom = _domaine(spec)
+    ext = _ext_json(ext_json)
+    cx.execute(
+        "INSERT INTO corrections (message_id, de_adresse, domaine, sujet, mots, extrait, "
+        "categorie, urgence, action_attendue, concerne, avant, at, precision) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (mid, spec, dom if dom not in FREEMAIL else "", sujet, _mots_cles(sujet),
+         re.sub(r"\s+", " ", (extrait or ""))[:200],
+         (cat_ia if juge else cat_r) or "autre", (urg_ia if juge else urg_r) or "normale",
+         int(bool(action_ia)) if juge else int(pour_moi == 1 or important == 1),
+         ext.get("concerne"), json.dumps({"origine": "precision"}), maintenant, t))
+    cx.commit()
+    return corrige_at is None
 
 
 def enregistrer_reglages(cfg, donnees):
@@ -2747,6 +2994,21 @@ def faire_cockpit_handler(cfg):
                             "source": source,
                             "url": ("/audio?t=" + str(int(time.time()))) if chemin else None,
                             "erreur": err})
+            elif self.path == "/api/preciser":
+                # Réponse à la question de l'IA : gardée, servie en exemple, et le message
+                # est rejugé avec elle (un seul appel IA) — sauf jugement corrigé à la main.
+                cx = sqlite3.connect(db)
+                rejuger = preciser(cx, mid, c.get("texte"))
+                cx.close()
+                cfg_ia = _config_ia(cfg)
+                fournisseur = cfg_ia.get("fournisseur", "mock")
+                rejuger = rejuger and cfg.get("_chemin_config") and (
+                    fournisseur == "mock" or bool(cfg_ia.get("cle")))
+                if rejuger:
+                    threading.Thread(target=lambda: cmd_analyser_ia(types.SimpleNamespace(
+                        config=cfg["_chemin_config"], mock=fournisseur == "mock", retout=True,
+                        limite=1, jours=0, compter=False, ids=[mid])), daemon=True).start()
+                self._json({"ok": True, "rejuge": bool(rejuger)})
             elif self.path == "/api/corriger":
                 cx = sqlite3.connect(db)
                 ok = corriger_jugement(cx, mid, c.get("quoi"))
@@ -2869,6 +3131,10 @@ h1{font-size:17px;margin:0}main{max-width:840px;margin:0 auto;padding:16px}
 .meta{color:var(--mut);font-size:12px;margin-top:4px}
 .ech{display:inline-block;background:var(--line);border-radius:5px;padding:1px 7px;font-size:12px;margin-left:6px}
 .q{margin-top:6px;font-size:13px;color:var(--haute)}
+.prec{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.prec input{flex:1;min-width:180px;font:13px system-ui;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--tx)}
+.rep{margin-top:6px;font-size:13px;color:var(--mut)}
+.badge.ok{border-color:var(--basse);color:var(--basse)}
 .badge{font-size:11px;border:1px solid var(--line);border-radius:5px;padding:0 6px;margin-left:6px;color:var(--mut)}
 .btns{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
 button{font:13px system-ui;padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--tx);cursor:pointer}
@@ -2959,7 +3225,9 @@ function btns(it){
      <button data-a="deleguer">Déléguer…</button>
      <button class="ok" data-a="traite">Traité</button>${rem}${corr}</div>`;
 }
-function brancher(el,it){el.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,el));}
+function brancher(el,it){el.querySelectorAll('button').forEach(b=>b.onclick=()=>action(it,b.dataset.a,el,b));
+  const champ=el.querySelector('.prec input');
+  if(champ)champ.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();action(it,'preciser',el,{dataset:{}});}};}
 
 const srcBadge=it=>({erreur:'<span class="badge warn" title="La réponse de l\\'IA a été rejetée : classement par les règles">tri par les règles</span>',
   attente:'<span class="badge" title="Pas encore jugé par l\\'IA : classement provisoire par les règles">IA en attente</span>',
@@ -2971,13 +3239,19 @@ function carte(it){
   const d=document.createElement('div');d.className='item '+(it.priorite||'basse');
   const ech=(it.echeance&&it.echeance!=='aucune')?`<span class="ech">${it.retard?'⚠ en retard : ':'⏱ '}${esc(it.echeance)}</span>`:'';
   const nl=it.non_lu===1?'<span class="badge">non lu</span>':'';
-  const q=it.question?`<div class="q">❓ ${esc(it.question)}</div>`:'';
+  const q=it.question?`<div class="q">❓ ${esc(it.question)}</div>`+(it.precision
+      ?`<div class="rep">Ta réponse : « ${esc(it.precision)} »</div>`
+      :`<div class="prec"><button class="mini" data-a="preciser" data-t="Oui, c’est pour moi">Oui, c’est pour moi</button>
+        <button class="mini" data-a="preciser" data-t="Non, pour information">Non, pour information</button>
+        <input type="text" maxlength="500" placeholder="Ou réponds en quelques mots…">
+        <button class="mini" data-a="preciser">Répondre</button></div>`):'';
+  const repBadge=it.repondu?`<span class="badge ok" title="Trouvé dans ton dossier Envoyés : marque-le Traité si l’affaire est close">✓ tu as répondu le ${esc(it.repondu)}</span>`:'';
   const titre=it.tache||it.resume||it.sujet||'(sans objet)';
   const res=(it.resume&&it.resume!==titre)?`<div class="resume">${esc(it.resume)}</div>`:'';
   const why=it.justification?`<div class="why">${esc(it.justification)}</div>`:'';
   d.innerHTML=`<div class="tache">${esc(titre)}${ech}${evBadge(it)}${nl}</div>${res}
    ${it.sujet&&it.sujet!==titre?`<div class="sujet">${esc(it.sujet)}</div>`:''}
-   <div class="meta">${esc(it.de)} · ${esc(it.date_txt)} ${freqBadge(it)}${quiBadge(it)}${srcBadge(it)}</div>${why}${q}${btns(it)}`;
+   <div class="meta">${esc(it.de)} · ${esc(it.date_txt)} ${freqBadge(it)}${quiBadge(it)}${repBadge}${srcBadge(it)}</div>${why}${q}${btns(it)}`;
   brancher(d,it);return d;
 }
 function groupe(items){
@@ -3006,8 +3280,17 @@ async function actionGroupe(items,a,g){
   for(const it of items.slice()){await api('/api/action',{id:it.id,etat});}
   g.remove();total-=items.length;maj();
 }
-async function action(it,a,el){
+async function action(it,a,el,bouton){
   if(['plus','moins','pas_pour_moi','pour_moi'].includes(a)){await api('/api/corriger',{id:it.id,quoi:a});charger();return;}
+  if(a==='preciser'){
+    const champ=el.querySelector('.prec input');
+    const texte=((bouton&&bouton.dataset&&bouton.dataset.t)||(champ&&champ.value)||'').trim();
+    if(!texte){if(champ)champ.focus();return;}
+    const r=await api('/api/preciser',{id:it.id,texte});
+    const zone=el.querySelector('.prec');
+    if(zone)zone.outerHTML=`<div class="rep">Ta réponse : « ${esc(texte)} » — ${r.rejuge?'le message est rejugé avec elle, recharge dans un instant.':'gardée pour ce message et les messages semblables.'}</div>`;
+    if(r.rejuge)setTimeout(charger,8000);
+    return;}
   if(a==='ouvrir'||a==='deleguer'){await api('/api/ouvrir',{id:it.id});
      if(a==='deleguer')alert("L'email s'ouvre dans ton logiciel : fais « Transférer », ajoute le collègue et ta note.");
      return;}

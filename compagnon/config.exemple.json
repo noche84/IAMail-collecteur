@@ -10,6 +10,8 @@
   "mbox_sources": [
     "/home/asus/.var/app/org.mozilla.thunderbird_esr/.thunderbird/kb7fqa9k.default-esr/ImapMail/imap.gmail.com/INBOX"
   ],
+  "envoyes_sources": [],
+  "_envoyes_note": "Dossier Envoyés (mbox). Vide = deviné à côté de chaque mbox_sources (Sent, Sent Items, Envoyés, [Gmail].sbd/Sent Mail…). Sert à savoir si tu as déjà répondu et à qui tu écris. Sous Outlook : « Éléments envoyés », automatique.",
   "mes_adresses": [],
   "_mes_adresses_note": "TES adresses, alias compris : sans elles, impossible de distinguer « à moi » de « en copie » (réglable dans le cockpit, ⚙ Réglages).",
   "utilisateur": {

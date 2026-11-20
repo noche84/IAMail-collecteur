@@ -444,12 +444,126 @@ class Serveur(Base):
         self.assertNotIn("_chemin_config", enregistre)
         self.assertEqual(M._utilisateur_txt(self.cfg), "Arnaud, Informatique. Pannes d'abord.")
         self.assertEqual(self.req("POST", "/api/corriger", {"id": "s1", "quoi": "plus"})[0], 200)
+        st, _, b = self.req("POST", "/api/preciser", {"id": "s1", "texte": "Non, pour information"})
+        self.assertEqual((st, json.loads(b)["rejuge"]), (200, False))       # s1 corrigé à la main
         st, _, b = self.req("POST", "/api/rejuger", {"jours": 14, "compter": True})
         self.assertEqual((st, json.loads(b)["n"], json.loads(b)["max"]), (200, 0, 300))
         self.assertEqual(self.cx.execute("SELECT ia_urgence FROM messages").fetchone()[0], "haute")
 
 
+class Envoyes(Base):
+    """Dossier Envoyés (moteur 2.4) : rattachement aux fils, entrée IA, cockpit."""
+
+    def boite(self, nom, messages):
+        chemin = Path(self.tmp.name) / nom
+        mb = mailbox.mbox(str(chemin))
+        for m in messages:
+            mb.add(m.encode("utf-8"))
+        mb.flush(); mb.close()
+        return chemin
+
+    def test_releve_thunderbird_et_entree_ia(self):
+        il_y_a = lambda j, h=9: (datetime.now(timezone.utc) - timedelta(days=j)).replace(
+            hour=h, minute=0, second=0, microsecond=0).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        inbox = self.boite("INBOX", [
+            f"From: Paul Durand <paul@client.be>\nTo: moi@ccl.be\nSubject: Devis toiture\n"
+            f"Message-ID: <p1@client.be>\nDate: {il_y_a(4)}\n\nPouvez-vous chiffrer ?\n",
+            f"From: Paul Durand <paul@client.be>\nTo: moi@ccl.be\nSubject: Re: Devis toiture\n"
+            f"Message-ID: <p2@client.be>\nDate: {il_y_a(3)}\n\nUne relance.\n",
+            f"From: Paul Durand <paul@client.be>\nTo: moi@ccl.be\nSubject: Re: Devis toiture\n"
+            f"Message-ID: <p3@client.be>\nDate: {il_y_a(1)}\n\nMerci, et pour la gouttière ?\n",
+        ])
+        self.boite("Sent", [
+            f"From: moi@ccl.be\nTo: Paul Durand <paul@client.be>\nSubject: Re: Devis toiture\n"
+            f"Message-ID: <r1@ccl.be>\nIn-Reply-To: <p2@client.be>\nReferences: <p1@client.be> <p2@client.be>\n"
+            f"Date: {il_y_a(2)}\n\nVoici le devis.\n",
+            f"From: moi@ccl.be\nTo: julie@x.be\nSubject: Autre chose\nMessage-ID: <r2@ccl.be>\n"
+            f"Date: {il_y_a(2)}\n\nBonjour Julie.\n",
+        ])
+        c = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+        c["mbox_sources"] = [str(inbox)]
+        self.cfg_path.write_text(json.dumps(c), encoding="utf-8")
+        M.cmd_import(types.SimpleNamespace(config=str(self.cfg_path), mbox=None, limite=None))
+        self.assertEqual(self.cx.execute("SELECT COUNT(*) FROM envoyes").fetchone()[0], 2)
+        M.cmd_analyser(types.SimpleNamespace(config=str(self.cfg_path), retout=False, silencieux=True))
+        vu = []
+        M.appeler_mistral = lambda cfg_ia, sysm, ent, **k: (vu.append(ent), json.dumps(BON))[1]
+        self.analyser_ia()
+        self.assertEqual(len(vu), 3)
+        p3 = next(e for e in vu if "gouttière" in e)
+        self.assertIn("dernière réponse du destinataire le", p3)
+        self.assertIn("le destinataire lui a écrit 1 fois ces 90 derniers jours", p3)
+        # relances : p1 et p2 sont antérieurs à la réponse → plus aucune relance comptée
+        self.assertNotIn("RELANCE", p3)
+        # cockpit : p2 a reçu une réponse après lui, p3 non
+        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"]) for i in c["items"]}
+        self.assertTrue(items["p2@client.be"]["repondu"])
+        self.assertIsNone(items["p3@client.be"]["repondu"])
+
+    def test_rattachement_par_sujet_exige_l_expediteur_parmi_les_destinataires(self):
+        self.ins("q1", de="Anne <anne@x.be>", sujet="Facture", jours=1)
+        M.enregistrer_envoi(self.cx, "e1", (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
+                            ["autre@y.be"], "Re: Facture")
+        idx = M.index_envoyes(self.cx)
+        row = {"sujet": "Facture", "de_adresse": "Anne <anne@x.be>",
+               "date_mail": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()}
+        self.assertIsNone(M.dernier_envoi(row, idx))
+        M.enregistrer_envoi(self.cx, "e2", (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+                            ["ANNE@x.be"], "RE: Facture")
+        self.assertIsNotNone(M.dernier_envoi(row, M.index_envoyes(self.cx)))
+        self.assertFalse(M.enregistrer_envoi(self.cx, "<e2>", "", [], "doublon"))   # dédoublonné
+
+    def test_noms_du_dossier_envoyes(self):
+        d = Path(self.tmp.name) / "ImapMail" / "srv"
+        (d / "[Gmail].sbd").mkdir(parents=True)
+        (d / "INBOX").write_text(""); (d / "[Gmail].sbd" / "Sent Mail").write_text("")
+        (d / "Envoyés").write_text(""); (d / "Envoyés.msf").write_text("")
+        trouves = {f.name for f in M.envois_depuis_mbox({"mbox_sources": [str(d / "INBOX")]})}
+        self.assertEqual(trouves, {"Envoyés", "Sent Mail"})
+        self.assertEqual(M.envois_depuis_mbox({"envoyes_sources": ["/x/Sent"], "mbox_sources": []}),
+                         [Path("/x/Sent")])
+
+
+class Precision(Base):
+    def test_reponse_gardee_exemple_et_rejugement(self):
+        self.ins("m1", sujet="Accès au serveur", extrait="Peux-tu regarder ?")
+        self.juge("m1", urgence="normale", ia_question="Est-ce à toi d'agir ?")
+        self.assertTrue(M.preciser(self.cx, "m1", "  Oui,   c'est pour moi. "))
+        self.assertEqual(self.cx.execute("SELECT precision FROM messages").fetchone()[0], "Oui, c'est pour moi")
+        vu = {}
+        M.appeler_mistral = lambda cfg_ia, sysm, ent, **k: (vu.setdefault("e", ent), json.dumps(BON))[1]
+        self.analyser_ia(retout=True, ids=["m1"])
+        self.assertIn("PRÉCISION DU DESTINATAIRE : Oui, c'est pour moi", vu["e"])
+        self.ins("m2", sujet="Accès au serveur bloqué")
+        vu.clear()
+        self.analyser_ia(ids=["m2"])
+        self.assertIn("→ précision du destinataire : « Oui, c'est pour moi »", vu["e"])
+
+    def test_jamais_de_rejugement_apres_correction(self):
+        self.ins("m1"); self.juge("m1")
+        M.corriger_jugement(self.cx, "m1", "plus")
+        self.assertFalse(M.preciser(self.cx, "m1", "Non, pour information"))
+        self.assertFalse(M.preciser(self.cx, "m1", "   "))
+
+
 class Outlook(unittest.TestCase):
+    def test_lire_envoi(self):
+        class Rec:
+            def __init__(s, adr, t): s.Address, s.Type, s.AddressEntry = adr, t, None
+        class Item:
+            Subject = "RE: Devis"; SentOn = datetime(2026, 11, 18, 14, 0)
+            Recipients = [Rec("paul@client.be", 1), Rec("cc@x.be", 2)]
+            class PropertyAccessor:
+                @staticmethod
+                def GetProperty(tag):
+                    return {O.PR_INTERNET_MESSAGE_ID: "<r1@ccl.be>", O.PR_IN_REPLY_TO_ID: "<p2@client.be>",
+                            O.PR_INTERNET_REFERENCES: "<p1@client.be> <p2@client.be>"}.get(tag, "")
+        v = O.lire_envoi(Item())
+        self.assertEqual((v["message_id"], v["in_reply_to"], v["refs"], v["a"]),
+                         ("r1@ccl.be", "p2@client.be", ["p1@client.be", "p2@client.be"],
+                          ["paul@client.be", "cc@x.be"]))
+        self.assertTrue(v["date"].startswith("2026-11-18T14:00"))
+
     def test_classes_et_entetes(self):
         self.assertTrue(O.est_courrier("IPM.Note"))
         self.assertTrue(O.est_courrier("IPM.Schedule.Meeting.Request"))
