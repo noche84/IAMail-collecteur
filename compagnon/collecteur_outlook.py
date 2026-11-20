@@ -26,6 +26,9 @@ PR_INTERNET_MESSAGE_ID = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
 PR_TRANSPORT_HEADERS = "http://schemas.microsoft.com/mapi/proptag/0x007D001F"
 OL_MSG = 3            # olMSG : format .msg pour MailItem.SaveAs
 OL_FOLDER_INBOX = 6   # olFolderInbox
+OL_FOLDER_SENT = 5    # olFolderSentMail
+PR_IN_REPLY_TO_ID = "http://schemas.microsoft.com/mapi/proptag/0x1042001F"
+PR_INTERNET_REFERENCES = "http://schemas.microsoft.com/mapi/proptag/0x1039001F"
 
 
 # ───────────────────────── Logique pure (testable sans COM) ─────────────────────────
@@ -226,6 +229,67 @@ def lire_mailitem(item):
         "message_id": mid,
         "entry_id": str(getattr(item, "EntryID", "") or ""),
     }
+
+
+def _envoye_iso(item):
+    """Date d'envoi (SentOn) en ISO UTC ; '' si absente."""
+    try:
+        t = item.SentOn
+        if t:
+            return datetime(t.year, t.month, t.day, t.hour, t.minute, t.second,
+                            tzinfo=timezone.utc).isoformat()
+    except Exception:
+        pass
+    return ""
+
+
+def lire_envoi(item):
+    """Valeurs utiles d'un message ENVOYÉ (moteur 2.4) : identifiant, date, destinataires,
+    objet, In-Reply-To, References. Testable avec un faux objet."""
+    to, cc = _destinataires(item)
+    sujet = str(getattr(item, "Subject", "") or "")
+    envoye = _envoye_iso(item)
+    mid = message_id_depuis(str(_prop(item, PR_INTERNET_MESSAGE_ID, "")), envoye, "", sujet)
+    ids = lambda v: [x.strip() for x in str(v or "").replace(">", "> ").split()
+                     if x.strip().startswith("<")]
+    irt = ids(_prop(item, PR_IN_REPLY_TO_ID, ""))
+    return {"message_id": mid, "date": envoye, "a": to + cc, "sujet": sujet,
+            "in_reply_to": irt[0].strip("<>") if irt else "",
+            "refs": [x.strip("<>") for x in ids(_prop(item, PR_INTERNET_REFERENCES, ""))]}
+
+
+def relever_envoyes(cfg, cx, C, max_par_cycle=2000):
+    """Indexe le dossier « Éléments envoyés » (le plus récent d'abord). S'arrête au premier
+    bloc déjà connu : les cycles suivants ne relisent pas tout le dossier."""
+    ns = _namespace()
+    try:
+        dossier = ns.GetDefaultFolder(OL_FOLDER_SENT)
+    except Exception:
+        return 0
+    items = dossier.Items
+    try:
+        items.Sort("[SentOn]", True)
+    except Exception:
+        pass
+    n, deja, lus = 0, 0, 0
+    for item in items:
+        lus += 1
+        if lus > max_par_cycle or deja >= 50:
+            break
+        try:
+            if not est_courrier(str(getattr(item, "MessageClass", "") or "IPM.Note")):
+                continue
+            v = lire_envoi(item)
+        except Exception:
+            continue
+        if C.enregistrer_envoi(cx, v["message_id"], v["date"], v["a"], v["sujet"],
+                               v["in_reply_to"], v["refs"], "outlook"):
+            n += 1
+            deja = 0
+        else:
+            deja += 1
+    cx.commit()
+    return n
 
 
 def _dossiers_a_relever(ns, cfg):
