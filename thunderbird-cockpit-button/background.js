@@ -191,12 +191,32 @@ async function prevenirCompagnonRelie() {
   } catch (e) { /* compagnon absent : rien à prévenir */ }
 }
 
+// --- Statut lu / non lu → compagnon ---
+// Pour un compte IMAP, le fichier mbox que lit le compagnon ne dit pas ce qui est lu
+// (Thunderbird le garde dans son index .msf) : l'extension lui envoie la liste des non lus
+// des 14 derniers jours. Lire un mail ne le traite jamais : c'est un simple affichage.
+async function synchroNonLus() {
+  const depuis = new Date(Date.now() - 14 * 86400e3);
+  let liste;
+  try { liste = await messenger.messages.query({ fromDate: depuis, messagesPerPage: 500 }); }
+  catch (e) { return; }
+  const nonLus = [];
+  for await (const m of pages(liste)) {
+    if (!m.read && m.headerMessageId && m.folder && dossierCollecte(m.folder)) nonLus.push(sansChevrons(m.headerMessageId));
+  }
+  try {
+    await fetch(API + "/api/sync/non-lus", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ depuis: depuis.toISOString(), non_lus: nonLus }) });
+  } catch (e) { /* compagnon absent */ }
+}
+
 // --- Cycle : cockpit local, GesEnt (file, rattrapage, synchro), avis au compagnon ---
 let tour = 0;
 async function cycle() {
   await pret;
   tour++;
   await synchroLocale();
+  if (tour % 8 === 1) await synchroNonLus();                                                 // ≈ 2 min
   if (client.estRelie()) {
     if (tour % 20 === 1) { await client.rafraichir(); await client.chargerMoteur(false); dernierAvis = null; }   // ≈ 5 min (le compagnon a pu redémarrer)
     if (tour % 4 === 1) await client.balayer();                                            // ≈ 1 min

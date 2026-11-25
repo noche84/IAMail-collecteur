@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.24.1"
+VERSION = "1.25.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -2481,6 +2481,7 @@ def selection_ia(cx, retout=False, jours=0, limite=None, ids=None):
 
 
 REJUGE_JOURS, REJUGE_MAX = 14, 300
+IA_JOURS_SERVICE = 14      # le cycle automatique ne juge que le courrier de ces jours-là
 
 
 def cmd_analyser_ia(args):
@@ -3206,6 +3207,7 @@ def faire_cockpit_handler(cfg):
     etat_rejuge = {"en_cours": False, "fait": 0, "total": 0, "debut": None, "fin": None,
                    "bilan": None, "erreur": None}
     etat_relie = lire_relie(cfg)
+    etat_lu = {"at": None}            # dernier statut lu / non lu reçu de l'extension
 
     class H(http.server.BaseHTTPRequestHandler):
         def handle_one_request(self):
@@ -3476,6 +3478,26 @@ def faire_cockpit_handler(cfg):
                 cx.commit()
                 cx.close()
                 self._json({"ok": True})
+            elif self.path == "/api/sync/non-lus":
+                # Statut lu / non lu tel que Thunderbird le connaît. Pour un compte IMAP, le
+                # mbox ne le dit pas (Thunderbird le tient dans son .msf) : c'est l'extension
+                # qui l'envoie. Fenêtre 'depuis' : tout y est lu, sauf les 'non_lus'.
+                depuis = str(c.get("depuis") or "")[:40]
+                ids = [str(x).strip().strip("<>") for x in (c.get("non_lus") or [])][:5000]
+                if not _dt_message(depuis):
+                    return self._json({"ok": False, "erreur": "depuis attendu"}, 400)
+                cx = _ouvrir_db(db)
+                cx.execute("UPDATE messages SET non_lu=0 WHERE date_mail >= ? AND COALESCE(non_lu,1)!=0",
+                           (_dt_message(depuis).isoformat(),))
+                n = 0
+                for i in range(0, len(ids), 500):
+                    lot = ids[i:i + 500]
+                    n += cx.execute(f"UPDATE messages SET non_lu=1 WHERE message_id IN "
+                                    f"({','.join('?' * len(lot))})", lot).rowcount
+                cx.commit()
+                cx.close()
+                etat_lu["at"] = datetime.now(timezone.utc).isoformat()
+                self._json({"ok": True, "non_lus": n})
             elif self.path == "/api/sync/depuis-client":
                 # Sens inverse : l'utilisateur a posé/retiré l'étiquette dans Thunderbird.
                 # L'étiquette est la vérité partagée ; LIRE un mail ne le traite jamais.
@@ -4385,9 +4407,13 @@ def pipeline_once(cfg_path, utiliser_ia=True, ia_max=20):
         print(f"[{NOM}] relié à GesEnt : jugement IA fait par GesEnt (pas d'appel IA local)")
         utiliser_ia = False
     if utiliser_ia:
+        # Le service ne juge que le courrier récent (ia_jours, 14 par défaut) : sans borne,
+        # il remontait tout l'historique, 20 messages par cycle, aux frais de l'utilisateur.
+        # Un rejugement plus large reste possible à la main (analyser-ia --jours N).
+        jours_service = int(charger_config(cfg_path).get("ia_jours") or IA_JOURS_SERVICE)
         try:
             cmd_analyser_ia(types.SimpleNamespace(
-                config=cfg_path, mock=False, retout=False, limite=ia_max, jours=None))
+                config=cfg_path, mock=False, retout=False, limite=ia_max, jours=jours_service))
         except SystemExit as e:
             print(f"[{NOM}] (IA) {e}")
         except Exception as e:

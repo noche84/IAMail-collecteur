@@ -227,6 +227,16 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.25 — lu / non lu fiable, IA bornée au récent
+
+- **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
+  vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie
+  désormais la liste des non lus des 14 derniers jours (`POST /api/sync/non-lus`, toutes
+  les 2 minutes) ; le filtre « non lus seulement » du cockpit redevient juste.
+- **L'IA du service ne juge que le courrier récent** (`ia_jours`, 14 par défaut) : avec
+  `ia_jours: 0`, le cycle remontait tout l'historique, 20 mails toutes les 5 minutes, à
+  tes frais. Plus large : `analyser-ia --jours N`, à la main.
+
 ## Nouveautés 1.24 — l'actualité, pas l'historique
 
 - **« À traiter » = l'actualité** : les messages des 7 derniers jours (`cockpit_jours`),

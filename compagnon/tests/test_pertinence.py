@@ -321,6 +321,24 @@ class VecteursCommuns(unittest.TestCase):
                 self.assertEqual(M._date_du_jour_txt(c["date"]), c["attendu"])
 
 
+class ServiceIa(Base):
+    def test_le_service_ne_juge_que_le_courrier_recent(self):
+        """Sans borne, le cycle remontait tout l'historique (20 mails par cycle, payants)."""
+        self.ins("recent", jours=1)
+        self.ins("vieux", jours=60)
+        vu = []
+        M.appeler_mistral = lambda cfg_ia, sysm, ent, **k: (vu.append(ent), json.dumps(BON))[1]
+        garde = M.cmd_import
+        M.cmd_import = lambda a: None
+        try:
+            self.cx.commit()
+            M.pipeline_once(str(self.cfg_path), utiliser_ia=True)
+        finally:
+            M.cmd_import = garde
+        src = dict(self.cx.execute("SELECT message_id, ia_source FROM messages").fetchall())
+        self.assertEqual((src["recent"], src["vieux"]), ("mistral", None))
+
+
 class Rejugement(Base):
     def test_profil_modifie_propose_sans_appeler_l_ia(self):
         appels = []
@@ -524,6 +542,19 @@ class Serveur(Base):
         self.assertFalse(p["en_cours"])
         self.assertEqual((p["fait"], p["bilan"]["erreurs"]), (p["total"], 0))
         self.assertGreaterEqual(p["bilan"]["juges"], 4)
+
+    def test_non_lus_depuis_thunderbird(self):
+        """IMAP : le mbox dit « lu » pour tout ; l'extension envoie les vrais non lus."""
+        for i in range(3):
+            self.ins(f"n{i}", non_lu=0)
+        self.ins("ancien", jours=30, non_lu=1)
+        depuis = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        st, _, b = self.req("POST", "/api/sync/non-lus", {"depuis": depuis, "non_lus": ["<n1>", "n2"]},
+                            Origin="moz-extension://abc")
+        self.assertEqual((st, json.loads(b)["non_lus"]), (200, 2))
+        lus = dict(self.cx.execute("SELECT message_id, non_lu FROM messages").fetchall())
+        self.assertEqual((lus["n0"], lus["n1"], lus["n2"], lus["ancien"]), (0, 1, 1, 1))  # hors fenêtre : intact
+        self.assertEqual(self.req("POST", "/api/sync/non-lus", {"non_lus": []})[0], 400)
 
     def test_reglages_bloquants(self):
         """Sans adresses ni fonction, le cockpit ouvre directement les réglages."""

@@ -65,6 +65,12 @@ const attendre = ms => new Promise(r => setTimeout(r, ms));
   for (const f of ["mime.js", "tri.js", "gesent.js", "background.js"]) require(path.join(EXT, f));
   await attendre(50);
 
+  console.log("0. Statut lu / non lu envoyé au compagnon (compte IMAP : le mbox ne le dit pas)");
+  {
+    const nl = compagnon.appels.find(a => a[0] === "/api/sync/non-lus");
+    verif(nl && Array.isArray(nl[1].non_lus) && nl[1].depuis, "au démarrage : POST /api/sync/non-lus (fenêtre de 14 jours)");
+  }
+
   console.log("1. Page d'options : appairage");
   const etat0 = await ecouteurs.onMessage({ cmd: "etat" });
   const versionExt = require(path.join(EXT, "manifest.json")).version;
@@ -92,6 +98,16 @@ const attendre = ms => new Promise(r => setTimeout(r, ms));
   await ecouteurs.onMessage({ cmd: "envoyer" });
   verif(!g.etats.some(x => (x.traites || []).some(r => r.message_id === "envoi@entreprise.be")), "étiquette sur un envoi → ignorée");
   verif(g.erreursSchema.length === 0, "conforme au contrat" + (g.erreursSchema.length ? " — " + g.erreursSchema.join(" | ") : ""));
+
+  {
+    const nonLu = t.ajouter("acc1", mail({ id: "pas-lu@exemple.be" }), new Date());
+    const lu = t.ajouter("acc1", mail({ id: "deja-lu@exemple.be" }), new Date()); t.messages.get(lu.id).entete.lu = true;
+    compagnon.appels.length = 0;
+    for (let k = 0; k < 8; k++) for (const f of intervalles) f();
+    await attendre(150);
+    const nl = compagnon.appels.filter(a => a[0] === "/api/sync/non-lus").pop();
+    verif(nl && nl[1].non_lus.includes("pas-lu@exemple.be") && !nl[1].non_lus.includes("deja-lu@exemple.be"), "liste des non lus : le mail lu n'y est pas, le non lu oui");
+  }
 
   console.log("3. Gestes dans Thunderbird");
   compagnon.appels.length = 0;
