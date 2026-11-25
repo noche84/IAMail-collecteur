@@ -227,6 +227,26 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.24 — l'actualité, pas l'historique
+
+- **« À traiter » = l'actualité** : les messages des 7 derniers jours (`cockpit_jours`),
+  les demandes restées sans réponse des 14 derniers jours et les échéances à venir.
+  Le reste se retrouve en choisissant une date « depuis » ; le cockpit dit combien sont
+  masqués.
+- **Répondu = réglé** : un message auquel tu as répondu ensuite (dossier Envoyés, depuis
+  n'importe quel ordinateur synchronisé en IMAP) sort de « À traiter » et du topo.
+- **« Attend ta réponse »** (nouvelle case, en tête) : une demande qui t'est adressée
+  (jugée « action attendue » par l'IA), sans réponse de ta part depuis plus de 20 h,
+  qu'elle soit lue ou non ; badge « sans réponse depuis N jours ». Le topo la passe en
+  « Maintenant » et le dit (« toujours sans réponse de ta part, depuis 4 jours »).
+- **Relève incrémentale** : un mbox inchangé n'est plus relu (4 minutes économisées à
+  chaque cycle sur 29 000 mails) ; un mbox qui a grandi n'est lu qu'à partir de
+  l'ancienne fin ; un mbox compacté est relu en entier. Idem pour les Envoyés.
+- **Santé des sources** : bandeau si la boîte lue n'a plus changé depuis 48 h, si une
+  autre boîte de réception Thunderbird (Flatpak, Snap, profil classique) est plus récente,
+  ou si le dossier Envoyés est introuvable. Commande `diagnostic` : ce que le compagnon
+  lit vraiment (fichiers, dates, dernier message, base).
+
 ## Nouveautés 1.23.1 — cockpit plus clair
 
 - **Réglages manquants = réglages ouverts** : sans adresse ou sans fonction décrite, le

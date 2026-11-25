@@ -153,8 +153,43 @@ class CaseDuJour(Base):
 
     def test_tri_par_urgence_dans_la_case(self):
         self.ins("recent_haute", jours=0); self.juge("recent_haute", urgence="haute")
-        self.ins("ancien_critique", jours=2); self.juge("ancien_critique", urgence="critique")
+        self.ins("ancien_critique", jours=0); self.juge("ancien_critique", urgence="critique")
         self.assertEqual(self.cases()["maintenant"][0], "ancien_critique")
+
+    def test_actualite_et_demande_sans_reponse(self):
+        """« À traiter » = l'actualité : les derniers jours, plus les demandes restées sans
+        réponse (lues ou non), plus les échéances à venir. Une demande de samedi sans
+        réponse remonte en tête ; un vieux « pour info » et un mail répondu sortent."""
+        self.ins("devis_samedi", sujet="Devis pour la chorale", jours=4, non_lu=0)
+        self.juge("devis_samedi", urgence="normale", action=1)
+        self.ins("info_lundi", jours=2); self.juge("info_lundi", urgence="basse", action=0)
+        self.ins("vieux_info", jours=40); self.juge("vieux_info", urgence="basse", action=0)
+        self.ins("vieille_demande", jours=30); self.juge("vieille_demande", action=1)
+        self.ins("echeance", jours=30); self.juge("echeance", action=0, echeance=AUJ)
+        self.ins("repondu_lundi", sujet="Répétition", jours=2); self.juge("repondu_lundi", action=1)
+        M.enregistrer_envoi(self.cx, "env1", (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                            ["jean.dupont@client.be"], "Re: Répétition")
+        self.cx.commit()
+        infos = {}
+        c = {x["cle"]: [i["id"] for i in x["items"]]
+             for x in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos)}
+        self.assertEqual(c["attente"], ["devis_samedi"])
+        tous = [i for v in c.values() for i in v]
+        self.assertIn("info_lundi", tous)
+        self.assertIn("echeance", tous)
+        for absent in ("vieux_info", "vieille_demande", "repondu_lundi"):
+            self.assertNotIn(absent, tous)
+        self.assertEqual((infos["masques_anciens"], infos["masques_repondus"]), (2, 1))
+        it = next(i for x in M.cockpit_liste(self.cfg["base_sqlite"]) for i in x["items"] if i["id"] == "devis_samedi")
+        self.assertEqual(it["attente_depuis"], 4)
+        # Le topo : la demande sans réponse passe devant, le mail répondu n'y est plus.
+        t = M.elements_topo(self.cx, self.cfg)
+        ids = [e["id"] for e in t["elements"]]
+        self.assertNotIn("repondu_lundi", ids)
+        e = next(e for e in t["elements"] if e["id"] == "devis_samedi")
+        self.assertEqual((e["case"], e["sans_reponse_jours"]), ("maintenant", 4))
+        court, complet = M.script_topo_gabarit(t)
+        self.assertIn("Toujours sans réponse de ta part, depuis 4 jours", complet)
 
 
 class Memoire(Base):
@@ -564,6 +599,51 @@ class Envoyes(Base):
         mb.flush(); mb.close()
         return chemin
 
+    def test_releve_incrementale_et_sante_des_sources(self):
+        """Un mbox inchangé n'est pas relu ; un mbox qui grandit n'est lu qu'à partir de
+        l'ancienne fin ; un mbox réécrit est relu en entier. Le cockpit prévient quand la
+        boîte lue ne bouge plus ou qu'une autre, plus récente, existe."""
+        mail = lambda i, j=0: (f"From: Anne <anne@x.be>\nTo: moi@ccl.be\nSubject: Mail {i}\n"
+                               f"Message-ID: <m{i}@x.be>\nX-Mozilla-Status: 0000\n"
+                               f"Date: {(datetime.now(timezone.utc) - timedelta(days=j)).strftime('%a, %d %b %Y %H:%M:%S +0000')}\n\nCorps {i}.\n")
+        inbox = self.boite("INBOX", [mail(1), mail(2)])
+        self.boite("Sent", [])
+        self.cfg["mbox_sources"] = [str(inbox)]
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["archive"]), (2, 2))
+        self.assertTrue(M.importer_mbox(self.cfg, self.cx, inbox, incremental=True).get("inchange"))
+        mb = mailbox.mbox(str(inbox)); mb.add(mail(3).encode()); mb.flush(); mb.close()
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["archive"]), (1, 1))                   # seulement la suite
+        self.assertEqual(self.cx.execute("SELECT non_lu FROM messages WHERE message_id='m3@x.be'").fetchone()[0], 1)
+        mb = mailbox.mbox(str(inbox)); mb.remove(next(iter(mb.keys()))); mb.flush(); mb.close()  # compacté
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["doublon"]), (2, 2))                  # relu en entier, rien perdu
+        # Santé : rien d'alarmant, puis boîte figée depuis 3 jours, puis Envoyés absents.
+        self.assertEqual(M.alertes_sources(self.cfg), [])
+        e = M.etat_sources(self.cfg)
+        self.assertTrue(e["sources"][0]["dernier_message"])
+        vieux = time.time() - 3 * 86400
+        os.utime(inbox, (vieux, vieux))
+        self.assertTrue(any("n'a plus changé" in a for a in M.alertes_sources(self.cfg)))
+        (Path(self.tmp.name) / "Sent").unlink()
+        self.assertTrue(any("Envoyés introuvable" in a for a in M.alertes_sources(self.cfg)))
+        self.cfg["mbox_sources"] = ["/nulle/part/INBOX"]
+        self.assertTrue(any("introuvable" in a for a in M.alertes_sources(self.cfg)))
+        # Une autre boîte de réception, plus récente, dans un profil Flatpak.
+        garde = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmp.name
+        try:
+            autre = Path(self.tmp.name) / ".var/app/org.mozilla.Thunderbird/.thunderbird/abc.default/ImapMail/imap.gmail.com/INBOX"
+            autre.parent.mkdir(parents=True)
+            autre.write_bytes(inbox.read_bytes())
+            self.cfg["mbox_sources"] = [str(inbox)]
+            al = M.alertes_sources(self.cfg)
+            self.assertTrue(any("plus récente" in a and "org.mozilla.Thunderbird" in a for a in al), al)
+        finally:
+            if garde is not None:
+                os.environ["HOME"] = garde
+
     def test_releve_thunderbird_et_entree_ia(self):
         il_y_a = lambda j, h=9: (datetime.now(timezone.utc) - timedelta(days=j)).replace(
             hour=h, minute=0, second=0, microsecond=0).strftime("%a, %d %b %Y %H:%M:%S +0000")
@@ -597,10 +677,16 @@ class Envoyes(Base):
         self.assertIn("le destinataire lui a écrit 1 fois ces 90 derniers jours", p3)
         # relances : p1 et p2 sont antérieurs à la réponse → plus aucune relance comptée
         self.assertNotIn("RELANCE", p3)
-        # cockpit : p2 a reçu une réponse après lui, p3 non
-        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"]) for i in c["items"]}
-        self.assertTrue(items["p2@client.be"]["repondu"])
+        # cockpit : p2 a reçu une réponse après lui → réglé, sorti de « À traiter » ;
+        # p3 non. Avec une date choisie, tout revient, avec le badge.
+        infos = {}
+        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos) for i in c["items"]}
+        self.assertNotIn("p2@client.be", items)
+        self.assertGreaterEqual(infos["masques_repondus"], 1)
         self.assertIsNone(items["p3@client.be"]["repondu"])
+        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"], depuis="2000-01-01")
+                 for i in c["items"]}
+        self.assertTrue(items["p2@client.be"]["repondu"])
 
     def test_rattachement_par_sujet_exige_l_expediteur_parmi_les_destinataires(self):
         self.ins("q1", de="Anne <anne@x.be>", sujet="Facture", jours=1)

@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.23.1"
+VERSION = "1.24.0"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -542,17 +542,171 @@ def _message_id(msg):
     return "synth-" + empreinte[:32]
 
 
-def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
-    """Parcourt un mbox Thunderbird et archive chaque message. Lecture seule."""
+def _archiver_message(cfg, cx, msg, brut, bilan, dossier_logique="INBOX"):
+    """Archive UN message lu dans un mbox (.eml + .json + index). Lecture seule de la source."""
+    # Identifiant du contrat moteur (le même que GesEnt et l'agent Outlook) :
+    # chevrons retirés ; 'synth-…' si l'en-tête manque.
+    mid = _message_id(msg)
+    if existe(cx, mid):
+        bilan["doublon"] += 1
+        return
+    if mid.startswith("synth-"):
+        # Archives d'avant la 1.18 : ces messages portaient une clé 'sansid:'.
+        if existe(cx, "sansid:" + hashlib.sha1(brut[:2000]).hexdigest()[:16]):
+            bilan["doublon"] += 1
+            return
+
+    dt = _date_iso(msg)
+    dt_part = dt or datetime.now(timezone.utc)
+    sujet = _dec_entete(msg.get("Subject"))
+    de = _dec_entete(msg.get("From"))
+
+    base = (
+        f"{dt_part.year:04d}-{dt_part.month:02d}-{dt_part.day:02d}_"
+        f"{dt_part.hour:02d}{dt_part.minute:02d}{dt_part.second:02d}"
+        f"__{_slug_expediteur(de)}__{_slug(sujet)}__{_hash6(mid)}"
+    )
+    sous = f"{dt_part.year:04d}/{dt_part.month:02d}"
+    dossier_dest = Path(cfg["dossier_destination"]) / sous
+    dest_eml = nom_libre(dossier_dest, base, ".eml")
+    dest_json = dest_eml.with_suffix(".json")
+
+    meta = {
+        "message_id": mid if not mid.startswith("synth-") else None,
+        "de_adresse": de,
+        "de_nom": de,
+        "destinataires": _adresses(msg.get("To")),
+        "copies": _adresses(msg.get("Cc")),
+        "date": dt.isoformat() if dt else None,
+        "sujet": sujet,
+        "dossier": dossier_logique,
+        "fichier_eml": str(dest_eml),
+        "pieces_jointes": _pieces_jointes(msg),
+        "collecte_at": datetime.now(timezone.utc).isoformat(),
+        "collecteur": {"nom": NOM, "version": VERSION, "source": "mbox"},
+    }
+
+    try:
+        ecrire_atomique(brut, dest_eml)
+        ecrire_atomique(
+            json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8"),
+            dest_json,
+        )
+    except Exception as e:
+        print(f"[{NOM}] échec écriture {base}: {e}", file=sys.stderr)
+        bilan["erreur"] += 1
+        return
+
+    extrait = _corps_texte(msg, _extrait_max(cfg))
+    st = msg.get("X-Mozilla-Status")
+    try:
+        non_lu = (0 if (int(st, 16) & 1) else 1) if st else None
+    except ValueError:
+        non_lu = None
+    cx.execute(
+        """INSERT OR IGNORE INTO messages
+           (message_id, de_adresse, destinataires, copies, date_mail, sujet,
+            fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at,
+            extrait)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (mid, de,
+         json.dumps(meta["destinataires"], ensure_ascii=False),
+         json.dumps(meta["copies"], ensure_ascii=False),
+         meta["date"], sujet, str(dest_eml), str(dest_json),
+         json.dumps(meta["pieces_jointes"], ensure_ascii=False),
+         dossier_logique, meta["collecte_at"], extrait),
+    )
+    if non_lu is not None:
+        cx.execute("UPDATE messages SET non_lu=? WHERE message_id=? AND non_lu IS NULL", (non_lu, mid))
+    bilan["archive"] += 1
+
+
+# État des fichiers mbox déjà lus (taille, date de modification) : un fichier qui n'a pas
+# bougé n'est pas relu ; un fichier qui a seulement grandi (Thunderbird ajoute à la fin)
+# n'est lu qu'à partir de l'ancienne fin. Un fichier réécrit (compactage) est relu en entier.
+def _etat_source(cx, chemin):
+    cx.execute("CREATE TABLE IF NOT EXISTS sources_etat (chemin TEXT PRIMARY KEY, "
+               "taille INTEGER, mtime REAL, debut TEXT, at TEXT)")
+    r = cx.execute("SELECT taille, mtime, debut FROM sources_etat WHERE chemin=?",
+                   (str(chemin),)).fetchone()
+    return {"taille": r[0], "mtime": r[1], "debut": r[2]} if r else None
+
+
+def _debut_fichier(chemin, n=4096):
+    with open(chemin, "rb") as f:
+        return hashlib.sha1(f.read(n)).hexdigest()
+
+
+def _noter_source(cx, chemin):
+    st = Path(chemin).stat()
+    cx.execute("CREATE TABLE IF NOT EXISTS sources_etat (chemin TEXT PRIMARY KEY, "
+               "taille INTEGER, mtime REAL, debut TEXT, at TEXT)")
+    cx.execute("INSERT OR REPLACE INTO sources_etat (chemin, taille, mtime, debut, at) "
+               "VALUES (?,?,?,?,?)", (str(chemin), st.st_size, st.st_mtime,
+                                      _debut_fichier(chemin, min(4096, st.st_size)),
+                                      datetime.now(timezone.utc).isoformat()))
+    cx.commit()
+
+
+def _mode_lecture(cx, chemin):
+    """'inchange', ('suite', octet de départ) ou 'complet'."""
+    avant = _etat_source(cx, chemin)
+    if not avant:
+        return "complet"
+    st = Path(chemin).stat()
+    if st.st_size == avant["taille"] and abs(st.st_mtime - (avant["mtime"] or 0)) < 1e-6:
+        return "inchange"
+    if st.st_size > avant["taille"] and avant["debut"] == _debut_fichier(chemin, min(4096, avant["taille"])):
+        with open(chemin, "rb") as f:
+            f.seek(avant["taille"])
+            bout = f.read(64).lstrip(b"\r\n")
+        if bout.startswith(b"From "):
+            return ("suite", avant["taille"])
+    if st.st_size == avant["taille"]:
+        return "inchange"       # même taille : statuts lus/non lus réécrits en place, rien de nouveau
+    return "complet"
+
+
+def _messages_depuis(chemin, depart):
+    """Messages d'un mbox à partir de l'octet 'depart' (début d'un message) : (msg, brut)."""
+    with open(chemin, "rb") as f:
+        f.seek(depart)
+        donnees = f.read()
+    morceaux = re.split(rb"(?:^|\n)(?=From )", donnees)
+    for m in morceaux:
+        if not m.startswith(b"From "):
+            continue
+        nl = m.find(b"\n")
+        brut = m[nl + 1:] if nl >= 0 else b""
+        if not brut.strip():
+            continue
+        yield email.message_from_bytes(brut), brut
+
+
+def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX", incremental=False):
+    """Parcourt un mbox Thunderbird et archive chaque message. Lecture seule.
+    incremental=True : saute un fichier inchangé, ne lit que la fin d'un fichier qui a grandi."""
     chemin_mbox = str(chemin_mbox)
     if not Path(chemin_mbox).exists():
         print(f"[{NOM}] mbox introuvable : {chemin_mbox}", file=sys.stderr)
-        return {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0}
+        return {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0, "introuvable": True}
+    bilan = {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0}
+    t0 = time.time()
+    mode = _mode_lecture(cx, chemin_mbox) if (incremental and not limite) else "complet"
+    if mode == "inchange":
+        return dict(bilan, inchange=True)
+    if isinstance(mode, tuple):
+        try:
+            for msg, brut in _messages_depuis(chemin_mbox, mode[1]):
+                bilan["lus"] += 1
+                _archiver_message(cfg, cx, msg, brut, bilan, dossier_logique)
+        finally:
+            cx.commit()
+        _noter_source(cx, chemin_mbox)
+        print(f"[{NOM}] import mbox (suite) : {bilan} en {time.time()-t0:.0f}s")
+        return bilan
 
     mbox = mailbox.mbox(chemin_mbox)  # ouverture read-only (pas de lock)
-    bilan = {"lus": 0, "archive": 0, "doublon": 0, "erreur": 0}
-    dest_root = Path(cfg["dossier_destination"])
-    t0 = time.time()
     try:
         for cle in mbox.iterkeys():
             if limite and bilan["lus"] >= limite:
@@ -560,86 +714,20 @@ def importer_mbox(cfg, cx, chemin_mbox, limite=None, dossier_logique="INBOX"):
             bilan["lus"] += 1
             try:
                 msg = mbox.get_message(cle)
+                brut = mbox.get_bytes(cle)
             except Exception:
                 bilan["erreur"] += 1
                 continue
-
-            # Identifiant du contrat moteur (le même que GesEnt et l'agent Outlook) :
-            # chevrons retirés ; 'synth-…' si l'en-tête manque.
-            mid = _message_id(msg)
-            if existe(cx, mid):
-                bilan["doublon"] += 1
-                continue
-            if mid.startswith("synth-"):
-                # Archives d'avant la 1.18 : ces messages portaient une clé 'sansid:'.
-                brut0 = mbox.get_bytes(cle)
-                if existe(cx, "sansid:" + hashlib.sha1(brut0[:2000]).hexdigest()[:16]):
-                    bilan["doublon"] += 1
-                    continue
-
-            dt = _date_iso(msg)
-            dt_part = dt or datetime.now(timezone.utc)
-            sujet = _dec_entete(msg.get("Subject"))
-            de = _dec_entete(msg.get("From"))
-
-            base = (
-                f"{dt_part.year:04d}-{dt_part.month:02d}-{dt_part.day:02d}_"
-                f"{dt_part.hour:02d}{dt_part.minute:02d}{dt_part.second:02d}"
-                f"__{_slug_expediteur(de)}__{_slug(sujet)}__{_hash6(mid)}"
-            )
-            sous = f"{dt_part.year:04d}/{dt_part.month:02d}"
-            dossier_dest = dest_root / sous
-            dest_eml = nom_libre(dossier_dest, base, ".eml")
-            dest_json = dest_eml.with_suffix(".json")
-
-            meta = {
-                "message_id": mid if not mid.startswith("synth-") else None,
-                "de_adresse": de,
-                "de_nom": de,
-                "destinataires": _adresses(msg.get("To")),
-                "copies": _adresses(msg.get("Cc")),
-                "date": dt.isoformat() if dt else None,
-                "sujet": sujet,
-                "dossier": dossier_logique,
-                "fichier_eml": str(dest_eml),
-                "pieces_jointes": _pieces_jointes(msg),
-                "collecte_at": datetime.now(timezone.utc).isoformat(),
-                "collecteur": {"nom": NOM, "version": VERSION, "source": "mbox"},
-            }
-
-            try:
-                ecrire_atomique(mbox.get_bytes(cle), dest_eml)
-                ecrire_atomique(
-                    json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8"),
-                    dest_json,
-                )
-            except Exception as e:
-                print(f"[{NOM}] échec écriture {base}: {e}", file=sys.stderr)
-                bilan["erreur"] += 1
-                continue
-
-            extrait = _corps_texte(msg, _extrait_max(cfg))
-            cx.execute(
-                """INSERT OR IGNORE INTO messages
-                   (message_id, de_adresse, destinataires, copies, date_mail, sujet,
-                    fichier_eml, fichier_json, pieces_jointes, dossier_src, ingere_at,
-                    extrait)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (mid, de,
-                 json.dumps(meta["destinataires"], ensure_ascii=False),
-                 json.dumps(meta["copies"], ensure_ascii=False),
-                 meta["date"], sujet, str(dest_eml), str(dest_json),
-                 json.dumps(meta["pieces_jointes"], ensure_ascii=False),
-                 dossier_logique, meta["collecte_at"], extrait),
-            )
-            bilan["archive"] += 1
-            if bilan["archive"] % 200 == 0:
+            _archiver_message(cfg, cx, msg, brut, bilan, dossier_logique)
+            if bilan["archive"] and bilan["archive"] % 200 == 0:
                 cx.commit()
                 print(f"[{NOM}] … {bilan['archive']} archivés "
                       f"({bilan['lus']} lus, {time.time()-t0:.0f}s)")
     finally:
         cx.commit()
         mbox.close()
+    if not limite:
+        _noter_source(cx, chemin_mbox)
     print(f"[{NOM}] import mbox : {bilan} en {time.time()-t0:.0f}s")
     return bilan
 
@@ -689,36 +777,51 @@ def enregistrer_envoi(cx, message_id, date_iso, adresses, sujet, in_reply_to="",
     return cur.rowcount == 1
 
 
-def importer_envoyes_mbox(cx, chemin):
+def _indexer_envoi_mbox(cx, m):
+    d = _dt_message(_dec_entete(m.get("Date")) or "")
+    if d is not None and d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    adresses = []
+    for h in ("To", "Cc"):
+        for _, adr in email.utils.getaddresses([_dec_entete(m.get(h)) or ""]):
+            adresses.append(adr)
+    irt = _ids_entete(m.get("In-Reply-To"))
+    return enregistrer_envoi(cx, _message_id(m), d.isoformat() if d else "", adresses,
+                             _dec_entete(m.get("Subject")), irt[0] if irt else "",
+                             _ids_entete(m.get("References")), "mbox")
+
+
+def importer_envoyes_mbox(cx, chemin, incremental=False):
     """Indexe le dossier Envoyés d'un profil Thunderbird. Lecture seule ; aucun archivage
-    (le coffre-fort concerne le courrier reçu)."""
+    (le coffre-fort concerne le courrier reçu). incremental : comme importer_mbox."""
+    mode = _mode_lecture(cx, chemin) if incremental else "complet"
+    if mode == "inchange":
+        return 0
+    n = 0
+    if isinstance(mode, tuple):
+        for m, _ in _messages_depuis(chemin, mode[1]):
+            if _indexer_envoi_mbox(cx, m):
+                n += 1
+        cx.commit()
+        _noter_source(cx, chemin)
+        return n
     try:
         boite = mailbox.mbox(str(chemin))
     except Exception as e:
         print(f"[{NOM}] Envoyés illisibles ({chemin}) : {e}", file=sys.stderr)
         return 0
-    n = 0
     try:
         for cle in boite.iterkeys():
             try:
                 m = boite.get_message(cle)
             except Exception:
                 continue
-            d = _dt_message(_dec_entete(m.get("Date")) or "")
-            if d is not None and d.tzinfo is None:
-                d = d.replace(tzinfo=timezone.utc)
-            adresses = []
-            for h in ("To", "Cc"):
-                for _, adr in email.utils.getaddresses([_dec_entete(m.get(h)) or ""]):
-                    adresses.append(adr)
-            irt = _ids_entete(m.get("In-Reply-To"))
-            if enregistrer_envoi(cx, _message_id(m), d.isoformat() if d else "", adresses,
-                                 _dec_entete(m.get("Subject")), irt[0] if irt else "",
-                                 _ids_entete(m.get("References")), "mbox"):
+            if _indexer_envoi_mbox(cx, m):
                 n += 1
         cx.commit()
     finally:
         boite.close()
+    _noter_source(cx, chemin)
     return n
 
 
@@ -856,9 +959,9 @@ def cmd_import(args):
                 "Indiquez un mbox : --mbox <chemin>  ou  'mbox_sources' dans la config."
             )
         for src in sources:
-            importer_mbox(cfg, cx, src, limite=args.limite)
+            importer_mbox(cfg, cx, src, limite=args.limite, incremental=not args.mbox)
         if not args.mbox:
-            n = sum(importer_envoyes_mbox(cx, f) for f in envois_depuis_mbox(cfg))
+            n = sum(importer_envoyes_mbox(cx, f, incremental=True) for f in envois_depuis_mbox(cfg))
             if n:
                 print(f"[{NOM}] Envoyés : {n} nouveau(x) message(s) indexé(s).")
     finally:
@@ -2640,6 +2743,7 @@ def backfill_non_lu(cx):
 
 
 CASES_COCKPIT = [("agenda", "Agenda — aujourd'hui et demain"),
+                 ("attente", "Attend ta réponse"),
                  ("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"),
                  ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
 
@@ -2656,10 +2760,23 @@ def _ext_json(v):
         return {}
 
 
-def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
-    """Tout message classé est visible (zéro perte) : jugé par l'IA, ou — IA en panne,
+COCKPIT_JOURS = 7          # « À traiter » : les derniers jours…
+ATTENTE_JOURS = 14         # … plus les demandes restées sans réponse de cette période
+ATTENTE_APRES_H = 20       # une demande devient « attend ta réponse » après ce délai
+
+
+def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jours=None):
+    """Tout message classé reste accessible (zéro perte) : jugé par l'IA, ou — IA en panne,
     réponse rejetée, pas encore passée — rangé par le tri déterministe. Le courrier de
-    masse non important a sa propre vue. La case est recalculée à la date du jour."""
+    masse non important a sa propre vue. La case est recalculée à la date du jour.
+
+    « À traiter » (sans date choisie) montre l'ACTUALITÉ : les messages des derniers jours
+    (COCKPIT_JOURS), les demandes restées sans réponse (ATTENTE_JOURS) et les échéances à
+    venir ; un message auquel l'utilisateur a répondu ensuite (dossier Envoyés, quel que
+    soit l'ordinateur d'où il a répondu) en sort. Le reste se retrouve en choisissant une
+    date (« depuis »). 'infos' reçoit les nombres masqués."""
+    infos = infos if infos is not None else {}
+    actualite = vue == "atraiter" and not depuis
     cx = _ouvrir_db(db)
     profils, _, _ = profils_expediteurs(cx)   # mémoire : fréquence par expéditeur
     conds = ["categorie IS NOT NULL"]
@@ -2675,6 +2792,18 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
             params.append(depuis)
         elif non_lus:
             conds.append("(non_lu=1 OR non_lu IS NULL)")
+        if actualite:
+            maintenant_utc = datetime.now(timezone.utc)
+            fen = (maintenant_utc - timedelta(days=jours or COCKPIT_JOURS)).isoformat()
+            att = (maintenant_utc - timedelta(days=ATTENTE_JOURS)).isoformat()
+            ech = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            filtre = ("(date_mail >= ? OR (ia_action=1 AND date_mail >= ?) OR "
+                      "(ia_echeance IS NOT NULL AND ia_echeance != 'aucune' AND ia_echeance >= ?))")
+            infos["masques_anciens"] = cx.execute(
+                f"SELECT COUNT(*) FROM messages WHERE {' AND '.join(conds)} AND NOT {filtre}",
+                params + [fen, att, ech]).fetchone()[0]
+            conds.append(filtre)
+            params += [fen, att, ech]
     cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance", "ia_urgence",
             "question", "non_lu", "ia_source", "urgence", "pour_moi", "important",
             "ia_action", "justification", "ia_extensions", "raison", "corrige_at",
@@ -2693,6 +2822,8 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     demain = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     _urg_prio = {"critique": "haute", "haute": "haute", "normale": "normale", "basse": "basse"}
     par_case = {c: [] for c, _ in CASES_COCKPIT}
+    infos["masques_repondus"] = 0
+    seuil_attente = datetime.now(timezone.utc) - timedelta(hours=ATTENTE_APRES_H)
     for r in rows:
         it = dict(zip(cols, r))
         juge = _juge_par_ia(it["ia_source"]) and bool(it["ia_urgence"])
@@ -2725,6 +2856,19 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
         rep_ = repondu_apres({"sujet": it["sujet"], "de_adresse": it["de"], "date_mail": it["date"]}, envois)
         dr = _local(_dt_message(rep_)) if rep_ else None
         it["repondu"] = dr.strftime("%d/%m %H:%M") if dr else None
+        if actualite and rep_:
+            infos["masques_repondus"] += 1     # tu as répondu après : c'est réglé
+            continue
+        # Une demande qui t'est adressée, restée sans réponse : elle remonte, qu'elle soit
+        # lue ou non (lu ≠ traité).
+        dm = _dt_message(it["date"])
+        if dm is not None and dm.tzinfo is None:
+            dm = dm.replace(tzinfo=timezone.utc)
+        if (vue == "atraiter" and juge and it["ia_action"] == 1 and not rep_
+                and it["concerne"] in (None, "moi") and dm is not None and dm < seuil_attente
+                and it["case_topo"] not in ("agenda",)):
+            it["case_topo"] = "attente"
+            it["attente_depuis"] = max(1, (datetime.now(timezone.utc) - dm).days)
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
@@ -2869,6 +3013,111 @@ def _effacer_profil_a_rejuger(cfg):
         os.replace(tmp, chemin)
 
 
+# ── Santé des sources Thunderbird ─────────────────────────────────────────────
+def _date_dernier_message(chemin, taille_lue=512 * 1024):
+    """Date (ISO) du dernier message d'un mbox, en ne lisant que la fin du fichier."""
+    try:
+        with open(chemin, "rb") as f:
+            f.seek(0, 2)
+            fin = f.tell()
+            f.seek(max(0, fin - taille_lue))
+            bout = f.read()
+    except OSError:
+        return None
+    i = bout.rfind(b"\nFrom ")
+    if i < 0:
+        i = 0 if bout.startswith(b"From ") else -1
+    if i < 0:
+        return None
+    entetes = bout[i + 1:].split(b"\n\n", 1)[0].split(b"\r\n\r\n", 1)[0]
+    m = re.search(rb"^Date:[ \t]*(.+)$", entetes, re.M | re.I)
+    d = _dt_message(m.group(1).decode("latin-1").strip()) if m else None
+    return d.isoformat() if d else None
+
+
+def _profils_thunderbird():
+    """Dossiers de profils Thunderbird de ce poste (classique, Flatpak, Snap)."""
+    h = Path.home()
+    bases = [h / ".thunderbird", h / "snap" / "thunderbird" / "common" / ".thunderbird"]
+    bases += list((h / ".var" / "app").glob("*/.thunderbird"))
+    if sys.platform == "darwin":
+        bases.append(h / "Library" / "Thunderbird" / "Profiles")
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        bases.append(Path(os.environ["APPDATA"]) / "Thunderbird" / "Profiles")
+    return [b for b in bases if b.is_dir()]
+
+
+def candidats_boite_reception():
+    """Fichiers « boîte de réception » trouvés dans tous les profils Thunderbird."""
+    out = []
+    for base in _profils_thunderbird():
+        for motif in ("*/ImapMail/*/INBOX", "*/Mail/*/Inbox"):
+            for f in base.glob(motif):
+                if f.is_file():
+                    out.append(f)
+    return out
+
+
+def etat_sources(cfg):
+    """Ce que le compagnon lit vraiment (diagnostic + alertes) : pour chaque source, la
+    date de modification et la date du dernier message ; et les autres boîtes de
+    réception Thunderbird plus récentes que celles configurées."""
+    def info(f, role):
+        f = Path(f)
+        d = {"chemin": str(f), "role": role, "existe": f.is_file()}
+        if d["existe"]:
+            st = f.stat()
+            d["taille"] = st.st_size
+            d["modifie"] = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
+            d["dernier_message"] = _date_dernier_message(f)
+        return d
+    if _collecteur(cfg) != "thunderbird":
+        return {"sources": [], "envoyes": [], "autres": []}
+    sources = [info(f, "reception") for f in cfg.get("mbox_sources") or []]
+    envoyes = [info(f, "envoyes") for f in envois_depuis_mbox(cfg)]
+    plus_recent = max([Path(x["chemin"]).stat().st_mtime for x in sources if x["existe"]] or [0])
+    connus = {str(Path(x["chemin"]).resolve()) for x in sources if x["existe"]}
+    autres = []
+    for f in candidats_boite_reception():
+        try:
+            if str(f.resolve()) not in connus and f.stat().st_mtime > plus_recent + 3600:
+                autres.append(info(f, "autre"))
+        except OSError:
+            pass
+    autres.sort(key=lambda x: x.get("modifie") or "", reverse=True)
+    return {"sources": sources, "envoyes": envoyes, "autres": autres[:5]}
+
+
+def alertes_sources(cfg, maintenant=None):
+    """Bandeau du cockpit : la boîte lue est-elle vivante ? les Envoyés sont-ils trouvés ?"""
+    try:
+        e = etat_sources(cfg)
+    except Exception:
+        return []
+    if _collecteur(cfg) != "thunderbird" or not (cfg.get("mbox_sources") or []):
+        return []
+    now = maintenant or datetime.now(timezone.utc)
+    out = []
+    for x in e["sources"]:
+        if not x["existe"]:
+            out.append(f"Boîte Thunderbird introuvable : {x['chemin']} — vérifie « mbox_sources » "
+                       f"dans la configuration (commande : iamail diagnostic).")
+            continue
+        vu = _dt_message(x["modifie"])
+        if vu and (now - vu) > timedelta(hours=48):
+            out.append(f"La boîte lue n'a plus changé depuis le {_local(vu).strftime('%d/%m à %H:%M')} : "
+                       f"les nouveaux mails n'arrivent pas ici. Thunderbird garde-t-il les messages "
+                       f"de ce compte sur l'ordinateur (Paramètres du compte → Synchronisation) ?")
+    if e["autres"]:
+        a = e["autres"][0]
+        out.append(f"Une autre boîte de réception Thunderbird est plus récente que celle lue : "
+                   f"{a['chemin']} — à mettre dans « mbox_sources » ?")
+    if not e["envoyes"]:
+        out.append("Dossier Envoyés introuvable : je ne peux pas savoir à quoi tu as déjà répondu "
+                   "(« envoyes_sources » dans la configuration ; commande : iamail diagnostic).")
+    return out
+
+
 def alertes_reglages(cfg):
     """Ce qui, dans les réglages, dégrade la pertinence — affiché en bandeau au cockpit."""
     out = []
@@ -2888,6 +3137,7 @@ def alertes_reglages(cfg):
     am = sys.modules.get("collecteur_applemail")
     if _collecteur(cfg) == "applemail" and am is not None and am.DERNIERE_ERREUR:
         out.append("Apple Mail : " + am.DERNIERE_ERREUR)
+    out += alertes_sources(cfg)
     return out
 
 
@@ -3025,7 +3275,11 @@ def faire_cockpit_handler(cfg):
                 vue = q.get("vue", ["atraiter"])[0]
                 non_lus = q.get("nonlus", ["0"])[0] == "1"
                 depuis = (q.get("depuis", [""])[0] or "").strip() or None
-                self._json({"cases": cockpit_liste(db, vue, non_lus, depuis)})
+                infos = {}
+                cases = cockpit_liste(db, vue, non_lus, depuis, infos,
+                                      jours=int(cfg.get("cockpit_jours") or COCKPIT_JOURS))
+                self._json({"cases": cases, **infos,
+                            "jours": int(cfg.get("cockpit_jours") or COCKPIT_JOURS)})
             elif u.path == "/api/reglages":
                 cfg_ia = _config_ia(cfg)
                 self._json({"utilisateur": cfg.get("utilisateur") or {},
@@ -3291,6 +3545,8 @@ dialog label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
 dialog input[type=text],dialog textarea{width:100%;font:14px system-ui;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--tx)}
 dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;color:var(--mut);margin-top:4px}
 #topotexte{white-space:pre-wrap;font-size:13px;margin-top:8px}
+.badge.att{background:#fef0c7;color:#93370d}
+.masques{max-width:840px;margin:14px auto;color:var(--mut);font-size:13px;text-align:center}
 #progres{display:none;max-width:840px;margin:10px auto 0;padding:10px 14px;border:1px solid #b2ddff;background:#eff8ff;color:#175cd3;border-radius:10px;font-size:14px}
 #progres .barre{height:6px;background:#d1e9ff;border-radius:3px;margin-top:6px;overflow:hidden}
 #progresbarre{height:100%;width:0;background:#2e90fa;transition:width .4s}
@@ -3389,13 +3645,14 @@ function carte(it){
         <button class="mini" data-a="preciser" data-t="Non, pour information">Non, pour information</button>
         <input type="text" maxlength="500" placeholder="Ou réponds en quelques mots…">
         <button class="mini" data-a="preciser">Répondre</button></div>`):'';
+  const attBadge=it.attente_depuis?`<span class="badge att" title="Demande qui t’est adressée, sans réponse de ta part dans ton dossier Envoyés">⏳ sans réponse depuis ${it.attente_depuis} jour${it.attente_depuis>1?'s':''}</span>`:'';
   const repBadge=it.repondu?`<span class="badge ok" title="Trouvé dans ton dossier Envoyés : marque-le Traité si l’affaire est close">✓ tu as répondu le ${esc(it.repondu)}</span>`:'';
   const titre=it.tache||it.resume||it.sujet||'(sans objet)';
   const res=(it.resume&&it.resume!==titre)?`<div class="resume">${esc(it.resume)}</div>`:'';
   const why=it.justification?`<div class="why">${esc(it.justification)}</div>`:'';
   d.innerHTML=`<div class="tache">${esc(titre)}${ech}${evBadge(it)}${nl}</div>${res}
    ${it.sujet&&it.sujet!==titre?`<div class="sujet">${esc(it.sujet)}</div>`:''}
-   <div class="meta">${esc(it.de)} · ${esc(it.date_txt)} ${freqBadge(it)}${quiBadge(it)}${repBadge}${srcBadge(it)}</div>${why}${q}${btns(it)}`;
+   <div class="meta">${esc(it.de)} · ${esc(it.date_txt)} ${freqBadge(it)}${quiBadge(it)}${attBadge}${repBadge}${srcBadge(it)}</div>${why}${q}${btns(it)}`;
   brancher(d,it);return d;
 }
 function groupe(items){
@@ -3458,6 +3715,10 @@ async function charger(){
       m.appendChild(items.length>1?groupe(items):carte(items[0]));}
   }
   maj();
+  const n=[];if(r.masques_repondus)n.push(r.masques_repondus+' auxquel(s) tu as déjà répondu');
+  if(r.masques_anciens)n.push(r.masques_anciens+' de plus de '+r.jours+' jours sans demande en attente');
+  if(n.length){const d=document.createElement('div');d.className='masques';
+    d.textContent='Masqués : '+n.join(' · ')+'. Pour les revoir, choisis une date « depuis ».';m.appendChild(d);}
 }
 function setVue(v){state.vue=v;
   document.getElementById('v-atraiter').classList.toggle('on',v==='atraiter');
@@ -3618,7 +3879,8 @@ def _recu_parle(dm):
     return f"le {jour} {_MOIS[d.month - 1]}"
 
 
-def _phrase_message(de, tache, res, ech, dm, annee=None, sujet=None, pourquoi=None):
+def _phrase_message(de, tache, res, ech, dm, annee=None, sujet=None, pourquoi=None,
+                    sans_reponse=None):
     """Qui, quoi, pour quand — et pourquoi, pour ce qui presse."""
     nom = _nom_affiche(de)
     res = (res or "").strip().rstrip(".")
@@ -3633,6 +3895,8 @@ def _phrase_message(de, tache, res, ech, dm, annee=None, sujet=None, pourquoi=No
     if ep:
         phrase += f", pour {ep}"
     phrase += "."
+    if sans_reponse:
+        phrase += f" Toujours sans réponse de ta part, depuis {sans_reponse} jour{'s' if sans_reponse > 1 else ''}."
     if pourquoi:
         phrase += " " + pourquoi.strip().rstrip(".") + "."
     return phrase
@@ -3764,6 +4028,8 @@ def elements_topo(cx, cfg):
         (plancher, ech_min, f'%"date": "{auj}"%', f'%"date": "{demain}"%')).fetchall()
 
     elements, evenements, n_susp = [], [], 0
+    envois = index_envoyes(cx)                     # tu as répondu ensuite → réglé
+    seuil_attente = datetime.now(timezone.utc) - timedelta(hours=ATTENTE_APRES_H)
     for r in rows:
         m = dict(zip(cols, r))
         juge = _juge_par_ia(m["ia_source"]) and bool(m["ia_urgence"])
@@ -3793,6 +4059,16 @@ def elements_topo(cx, cfg):
                 "quoi": e["tache"] or e["resume"] or _sujet_court(e["sujet"]),
                 "quand": jour + (f" à {ev['heure']}" if ev.get("heure") else ""),
             })
+        if repondu_apres(m, envois):
+            continue
+        dm = _dt_message(m["date_mail"] or "")
+        if dm is not None and dm.tzinfo is None:
+            dm = dm.replace(tzinfo=timezone.utc)
+        if (juge and m["ia_action"] == 1 and e["concerne"] in (None, "moi")
+                and dm is not None and dm < seuil_attente):
+            # Demande restée sans réponse : elle passe devant, avec son ancienneté.
+            e["case"] = "maintenant"
+            e["sans_reponse_jours"] = max(1, (datetime.now(timezone.utc) - dm).days)
         recent = (m["date_mail"] or "") >= plancher
         if e["case"] in _CASES_TOPO and (recent or (ech and ech >= ech_min)):
             elements.append(e)
@@ -3875,7 +4151,8 @@ def script_topo_gabarit(t, par_case=5):
                 e = gr[0][6]
                 lignes.append(_phrase_message(
                     e["de"], e["tache"], e["resume"], e["echeance"], e["date"],
-                    sujet=e["sujet"], pourquoi=e["pourquoi"] if case == "maintenant" else None))
+                    sujet=e["sujet"], pourquoi=e["pourquoi"] if case == "maintenant" else None,
+                    sans_reponse=e.get("sans_reponse_jours")))
             else:
                 lignes.append(_phrase_groupe(gr))
         if len(groupes) > maxg:
@@ -3930,6 +4207,8 @@ def entree_topo_ia(t):
             L.append(f"   Question en suspens : {e['question']}")
         if e.get("reponse_attendue"):
             L.append(f"   Réponse attendue : {e['reponse_attendue']}")
+        if e.get("sans_reponse_jours"):
+            L.append(f"   Sans réponse de ta part depuis {e['sans_reponse_jours']} jour(s) (dossier Envoyés)")
         if not e["juge"]:
             L.append("   (pas encore jugé par l'IA : classé par les règles, seul l'objet est connu)")
     if not montres:
@@ -4188,6 +4467,46 @@ def _sorties_sures():
             pass
 
 
+def cmd_diagnostic(args):
+    """Ce que le compagnon lit vraiment : sources, Envoyés, dernière arrivée en base."""
+    cfg = charger_config(args.config)
+    print(_version_complete())
+    print(f"collecteur : {_collecteur(cfg)}")
+    e = etat_sources(cfg)
+    def ligne(x):
+        if not x["existe"]:
+            return f"  ✗ INTROUVABLE  {x['chemin']}"
+        d = _dt_message(x.get("modifie"))
+        m = _dt_message(x.get("dernier_message") or "")
+        return (f"  • {x['chemin']}\n      modifié le {_local(d).strftime('%d/%m/%Y %H:%M') if d else '?'}"
+                f" · {x['taille'] / 1048576:.0f} Mo · dernier message du "
+                f"{_local(m).strftime('%d/%m/%Y %H:%M') if m else '?'}")
+    print("\nBoîte(s) de réception lue(s) (mbox_sources) :")
+    for x in e["sources"] or [{"chemin": "(aucune)", "existe": False}]:
+        print(ligne(x))
+    print("\nDossier(s) Envoyés :")
+    for x in e["envoyes"] or [{"chemin": "(aucun trouvé : « envoyes_sources »)", "existe": False}]:
+        print(ligne(x))
+    if e["autres"]:
+        print("\nAutres boîtes de réception Thunderbird, PLUS RÉCENTES que celle lue :")
+        for x in e["autres"]:
+            print(ligne(x))
+    try:
+        cx = _ouvrir_db(cfg["base_sqlite"])
+        r = cx.execute("SELECT MAX(date_mail), COUNT(*) FROM messages").fetchone()
+        rs = cx.execute("SELECT MAX(date_envoi), COUNT(*) FROM envoyes").fetchone()
+        cx.close()
+        d = _dt_message(r[0] or "")
+        ds = _dt_message(rs[0] or "")
+        print(f"\nBase : {r[1]} message(s) reçu(s), le plus récent du "
+              f"{_local(d).strftime('%d/%m/%Y %H:%M') if d else '?'} ; {rs[1]} envoi(s) indexé(s), "
+              f"le plus récent du {_local(ds).strftime('%d/%m/%Y %H:%M') if ds else '?'}")
+    except Exception as x:
+        print(f"\nBase illisible : {x}")
+    for a in alertes_sources(cfg):
+        print("⚠ " + a)
+
+
 def main(argv=None):
     _sorties_sures()
     ap = argparse.ArgumentParser(prog="iamail_compagnon",
@@ -4255,6 +4574,8 @@ def main(argv=None):
     s.add_argument("--nombre", type=int, default=15)
     s.set_defaults(func=cmd_brief)
 
+    s = sub.add_parser("diagnostic", help="ce que le compagnon lit vraiment (sources, Envoyés, base)")
+    s.set_defaults(func=cmd_diagnostic)
     s = sub.add_parser("topo-audio", help="génère le topo du matin en audio (voix locale)")
     s.add_argument("--par-case", type=int, default=5, dest="par_case")
     s.add_argument("--sortie", default=None, help="chemin du fichier audio")
