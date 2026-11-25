@@ -4077,10 +4077,12 @@ def _version_complete():
 def _sorties_sures():
     """Sous Windows, une sortie redirigée (service, fichier, CI) est en cp1252 : un émoji
     ou un caractère hors table faisait planter le programme. On remplace au lieu de
-    planter ; l'encodage choisi par le système ne change pas."""
+    planter ; l'encodage choisi par le système ne change pas.
+    Ligne par ligne : sous systemd (sortie vers le journal, pas un terminal), Python
+    gardait tout en mémoire tampon et `journalctl` restait vide pendant des heures."""
     for flux in (sys.stdout, sys.stderr):
         try:
-            flux.reconfigure(errors="replace")
+            flux.reconfigure(errors="replace", line_buffering=True)
         except Exception:
             pass
 

@@ -39,6 +39,11 @@ L'installeur :
   macOS : LaunchAgent ; Windows : dossier Démarrage + lanceur `.vbs` sans fenêtre) ;
 - ajoute un raccourci **« Cockpit IAMail »** (ouvre http://127.0.0.1:8740/).
 
+**Mettre à jour un poste** : relancer le même installeur avec le nouvel exécutable posé à
+côté. La config, la clé IA et l'archive sont gardées ; le compagnon en cours est arrêté
+puis relancé (sous Windows, l'installeur l'arrête lui-même : un `.exe` qui tourne ne
+peut pas être remplacé). Vérifier ensuite avec `iamail --version`.
+
 Désinstallation : `desinstaller-linux.sh` / `desinstaller-macos.sh` /
 `desinstaller-windows.ps1` (la config et
 l'archive sont conservées).
