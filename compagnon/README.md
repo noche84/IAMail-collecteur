@@ -242,6 +242,9 @@ Tests : `python3 -I compagnon/tests/test_pertinence.py` et
   réception, lors d'un rattrapage d'historique) ne fait plus remonter un vieux mail par
   ses dates — l'IA y lisait « demain » comme le lendemain du jugement. Dans le topo, une
   demande sans réponse passe en tête de « Maintenant », jamais « sans urgence ».
+- **1.25.4 — « Toujours sans réponse — plus de deux semaines »** : en bas du cockpit,
+  les demandes (ou relances humaines) restées sans réponse depuis 15 à 60 jours, avec
+  leur ancienneté. Plus rien ne disparaît en silence au bout de deux semaines.
 
 - **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
   vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie

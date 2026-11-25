@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.25.3"
+VERSION = "1.25.4"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -2756,7 +2756,8 @@ def backfill_non_lu(cx):
 CASES_COCKPIT = [("agenda", "Agenda — aujourd'hui et demain"),
                  ("attente", "Attend ta réponse"),
                  ("maintenant", "Maintenant"), ("cette_semaine", "Cette semaine"),
-                 ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
+                 ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info"),
+                 ("oublies", "Toujours sans réponse — plus de deux semaines")]
 
 
 # Jugement « à froid » : rendu plus de 14 jours après la réception (rattrapage de
@@ -2780,6 +2781,7 @@ def _ext_json(v):
 COCKPIT_JOURS = 7          # « À traiter » : les derniers jours…
 ATTENTE_JOURS = 14         # … plus les demandes restées sans réponse de cette période
 ATTENTE_APRES_H = 20       # une demande devient « attend ta réponse » après ce délai
+OUBLIES_JOURS = 60         # au-delà d'ATTENTE_JOURS et jusqu'ici : « toujours sans réponse »
 
 
 def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jours=None):
@@ -2812,7 +2814,7 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
         if actualite:
             maintenant_utc = datetime.now(timezone.utc)
             fen = (maintenant_utc - timedelta(days=jours or COCKPIT_JOURS)).isoformat()
-            att = (maintenant_utc - timedelta(days=ATTENTE_JOURS)).isoformat()
+            att = (maintenant_utc - timedelta(days=OUBLIES_JOURS)).isoformat()
             ech = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
             filtre = ("(date_mail >= ? OR ((ia_action=1 OR (pour_moi=1 AND expediteur_humain=1 "
                       "AND COALESCE(bulk,0)=0)) AND date_mail >= ?) OR "
@@ -2890,11 +2892,18 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
                            and dernier_envoi({"sujet": it["sujet"], "de_adresse": it["de"],
                                               "date_mail": it["date"]}, envois) is not None)
         demande_ia = juge and it["ia_action"] == 1 and it["concerne"] in (None, "moi")
-        if (vue == "atraiter" and (demande_ia or relance_humaine) and not rep_
-                and dm is not None and dm < seuil_attente and it["case_topo"] not in ("agenda",)):
-            it["case_topo"] = "attente"
-            it["attente_depuis"] = max(1, (datetime.now(timezone.utc) - dm).days)
+        attend = (vue == "atraiter" and (demande_ia or relance_humaine) and not rep_
+                  and dm is not None and dm < seuil_attente and it["case_topo"] not in ("agenda",))
+        age = (datetime.now(timezone.utc) - dm).days if dm is not None else 0
+        if attend:
+            it["case_topo"] = "attente" if age <= ATTENTE_JOURS else "oublies"
+            it["attente_depuis"] = max(1, age)
             it["balle"] = bool(relance_humaine)
+        elif actualite and age > (jours or COCKPIT_JOURS) and it["case_topo"] not in ("agenda",) and not (
+                it["echeance"] not in (None, "", "aucune")
+                and it["echeance"] >= (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")):
+            infos["masques_anciens"] = infos.get("masques_anciens", 0) + 1
+            continue          # ancien, ni demande en attente ni échéance : il reste masqué
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation

@@ -241,9 +241,11 @@ class CaseDuJour(Base):
         tous = [i for v in c.values() for i in v]
         self.assertIn("info_lundi", tous)
         self.assertIn("echeance", tous)
-        for absent in ("vieux_info", "vieille_demande", "repondu_lundi"):
+        for absent in ("vieux_info", "repondu_lundi"):
             self.assertNotIn(absent, tous)
-        self.assertEqual((infos["masques_anciens"], infos["masques_repondus"]), (2, 1))
+        # Une demande d'il y a un mois, toujours sans réponse : pas perdue, en bas.
+        self.assertEqual(c["oublies"], ["vieille_demande"])
+        self.assertEqual((infos["masques_anciens"], infos["masques_repondus"]), (1, 1))
         it = next(i for x in M.cockpit_liste(self.cfg["base_sqlite"]) for i in x["items"] if i["id"] == "devis_samedi")
         self.assertEqual(it["attente_depuis"], 4)
         # Le topo : la demande sans réponse passe devant, le mail répondu n'y est plus.
