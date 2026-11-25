@@ -3014,25 +3014,30 @@ def _effacer_profil_a_rejuger(cfg):
 
 
 # ── Santé des sources Thunderbird ─────────────────────────────────────────────
-def _date_dernier_message(chemin, taille_lue=512 * 1024):
-    """Date (ISO) du dernier message d'un mbox, en ne lisant que la fin du fichier."""
-    try:
-        with open(chemin, "rb") as f:
-            f.seek(0, 2)
-            fin = f.tell()
-            f.seek(max(0, fin - taille_lue))
-            bout = f.read()
-    except OSError:
-        return None
-    i = bout.rfind(b"\nFrom ")
-    if i < 0:
-        i = 0 if bout.startswith(b"From ") else -1
-    if i < 0:
-        return None
-    entetes = bout[i + 1:].split(b"\n\n", 1)[0].split(b"\r\n\r\n", 1)[0]
-    m = re.search(rb"^Date:[ \t]*(.+)$", entetes, re.M | re.I)
-    d = _dt_message(m.group(1).decode("latin-1").strip()) if m else None
-    return d.isoformat() if d else None
+def _date_dernier_message(chemin):
+    """Date (ISO) du dernier message d'un mbox, en ne lisant que la fin du fichier
+    (de plus en plus loin si le dernier message est gros : pièces jointes)."""
+    for taille_lue in (512 * 1024, 8 * 1024 * 1024, 64 * 1024 * 1024):
+        try:
+            with open(chemin, "rb") as f:
+                f.seek(0, 2)
+                fin = f.tell()
+                f.seek(max(0, fin - taille_lue))
+                bout = f.read()
+        except OSError:
+            return None
+        i = bout.rfind(b"\nFrom ")
+        if i < 0 and bout.startswith(b"From "):
+            i = -1
+        elif i < 0:
+            if fin <= taille_lue:
+                return None
+            continue
+        entetes = bout[i + 1:].split(b"\n\n", 1)[0].split(b"\r\n\r\n", 1)[0]
+        m = re.search(rb"^Date:[ \t]*(.+)$", entetes, re.M | re.I)
+        d = _dt_message(m.group(1).decode("latin-1").strip()) if m else None
+        return d.isoformat() if d else None
+    return None
 
 
 def _profils_thunderbird():
