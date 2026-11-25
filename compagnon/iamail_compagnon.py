@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.24.0"
+VERSION = "1.24.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -811,13 +811,15 @@ def importer_envoyes_mbox(cx, chemin, incremental=False):
         print(f"[{NOM}] Envoyés illisibles ({chemin}) : {e}", file=sys.stderr)
         return 0
     try:
-        for cle in boite.iterkeys():
+        for i, cle in enumerate(boite.iterkeys(), 1):
             try:
                 m = boite.get_message(cle)
             except Exception:
                 continue
             if _indexer_envoi_mbox(cx, m):
                 n += 1
+            if i % 200 == 0:
+                cx.commit()          # ne jamais garder la base verrouillée pendant toute la lecture
         cx.commit()
     finally:
         boite.close()
@@ -3206,6 +3208,12 @@ def faire_cockpit_handler(cfg):
     etat_relie = lire_relie(cfg)
 
     class H(http.server.BaseHTTPRequestHandler):
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):
+                pass                 # le client (navigateur, extension) n'attendait plus
+
         def log_message(self, *a):
             pass
 
@@ -3814,7 +3822,8 @@ def cmd_cockpit(args):
         print(f"[{NOM}] {n} statuts lus.")
     cx.close()
     port = args.port
-    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
+    srv.daemon_threads = True
     url = f"http://127.0.0.1:{port}/"
     print(f"[{NOM}] cockpit ouvert : {url}  (Ctrl+C pour arrêter)")
     if not args.pas_de_navigateur:
@@ -4275,11 +4284,20 @@ def rediger_topo_ia(cfg, t, cx=None):
         complet += (f"\n\nJ'ai aussi mis de côté {n} message{'s' if n > 1 else ''} "
                     f"suspect{'s' if n > 1 else ''}, à vérifier.")
     if cx is not None:
-        cx.execute("DELETE FROM topo_cache WHERE at < ?",
-                   ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),))
-        cx.execute("INSERT OR REPLACE INTO topo_cache (cle, court, complet, at) VALUES (?,?,?,?)",
-                   (cle, court, complet, datetime.now(timezone.utc).isoformat()))
-        cx.commit()
+        # Le cache évite de repayer l'IA ; s'il ne peut pas s'écrire (base occupée par
+        # une relève), le topo est quand même rendu.
+        try:
+            cx.execute("DELETE FROM topo_cache WHERE at < ?",
+                       ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),))
+            cx.execute("INSERT OR REPLACE INTO topo_cache (cle, court, complet, at) VALUES (?,?,?,?)",
+                       (cle, court, complet, datetime.now(timezone.utc).isoformat()))
+            cx.commit()
+        except sqlite3.OperationalError as e:
+            print(f"[{NOM}] topo : cache non écrit ({e})", file=sys.stderr)
+            try:
+                cx.rollback()
+            except sqlite3.Error:
+                pass
     return court, complet
 
 
@@ -4422,7 +4440,8 @@ def cmd_service(args):
     threading.Thread(target=boucle, daemon=True).start()
 
     port = args.port
-    srv = http.server.HTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), faire_cockpit_handler(cfg))
+    srv.daemon_threads = True
     url = f"http://127.0.0.1:{port}/"
     barre = "=" * 54
     print("\n" + barre)
