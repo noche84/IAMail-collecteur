@@ -175,6 +175,29 @@ class CaseDuJour(Base):
         e = next(e for e in t["elements"] if e["id"] == "veronique")
         self.assertEqual(e["case"], "maintenant")
 
+    def test_repondre_au_collegue_n_est_pas_repondre_au_demandeur(self):
+        """Cas réel complet : Olivier (chorale) transfère la demande de Véronique ; tu
+        réponds à Véronique ; elle demande une offre ; tu réponds ensuite à Olivier dans
+        le même fil. Véronique attend toujours : elle doit rester en tête."""
+        self.ins("fwd", de="Chorale Tétracorde <chorale.tetracorde@gmail.com>",
+                 sujet="Fwd: Demande pour animation d'anniversaire", jours=7)
+        self.juge("fwd", action=1)
+        self.ins("veronique", de="Véronique de Barsy <debarsyv@gmail.com>",
+                 sujet="Re: Demande pour animation d'anniversaire", jours=6)
+        self.juge("veronique", action=1, ia_extensions=json.dumps({"concerne": "moi"}))
+        t = lambda j, h=0: (datetime.now(timezone.utc) - timedelta(days=j, hours=h)).isoformat()
+        M.enregistrer_envoi(self.cx, "a-veronique", t(6, 3), ["debarsyv@gmail.com"],
+                            "Re: Demande pour animation d'anniversaire", in_reply_to="fwd")
+        M.enregistrer_envoi(self.cx, "a-olivier", t(5), ["chorale.tetracorde@gmail.com"],
+                            "Re: Fwd: Demande pour animation d'anniversaire", in_reply_to="fwd")
+        self.cx.commit()
+        infos = {}
+        c = {x["cle"]: [i["id"] for i in x["items"]]
+             for x in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos)}
+        self.assertIn("veronique", c["attente"])
+        self.assertNotIn("fwd", [i for v in c.values() for i in v])       # Olivier : répondu
+        self.assertEqual(infos["masques_repondus"], 1)
+
     def test_actualite_et_demande_sans_reponse(self):
         """« À traiter » = l'actualité : les derniers jours, plus les demandes restées sans
         réponse (lues ou non), plus les échéances à venir. Une demande de samedi sans

@@ -235,6 +235,9 @@ Tests : `python3 -I compagnon/tests/test_pertinence.py` et
   (cas réel : une offre demandée en retour d'une première réponse). Carte encadrée de
   rouge, badge « on attend ta réponse depuis N jours » qui clignote ; le topo la passe
   en « Maintenant ».
+- **1.25.2 — « tu as répondu » = répondu à CETTE personne** : une réponse dans le même
+  fil mais à quelqu'un d'autre (le collègue qui t'a transféré la demande) ne compte plus
+  comme une réponse à l'expéditeur.
 
 - **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
   vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie

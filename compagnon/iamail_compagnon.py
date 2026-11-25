@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.25.1"
+VERSION = "1.25.2"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -841,7 +841,7 @@ def index_envoyes(cx, maintenant=None):
     except sqlite3.Error:
         lignes = []
     if not lignes:
-        return {"fil_exact": {}, "fil_sujet": {}, "ecrits": {}}
+        return {"fil_exact": {}, "fil_sujet": {}, "ecrits": {}, "fil_dest": {}}
     ids = set()
     for _, _, _, irt, refs in lignes:
         if irt:
@@ -854,7 +854,7 @@ def index_envoyes(cx, maintenant=None):
         for mid, sujet in cx.execute(
                 f"SELECT message_id, sujet FROM messages WHERE message_id IN ({','.join('?' * len(lot))})", lot):
             fil_de[mid] = _sujet_fil(sujet)
-    fil_exact, fil_sujet, ecrits = {}, {}, {}
+    fil_exact, fil_sujet, ecrits, fil_dest = {}, {}, {}, {}
     for date_envoi, a, cle_fil, irt, refs in lignes:
         d = _dt_message(date_envoi)
         if d is None:
@@ -867,12 +867,13 @@ def index_envoyes(cx, maintenant=None):
             for k in fils:
                 if k:
                     fil_exact.setdefault(k, []).append(d)
+                    fil_dest.setdefault(k, []).append((d, dest))
         elif cle_fil:
             fil_sujet.setdefault(cle_fil, []).append((d, dest))
         if (now - d).days <= f_ecrits:
             for adr in dest:
                 ecrits[adr] = ecrits.get(adr, 0) + 1
-    return {"fil_exact": fil_exact, "fil_sujet": fil_sujet, "ecrits": ecrits}
+    return {"fil_exact": fil_exact, "fil_sujet": fil_sujet, "ecrits": ecrits, "fil_dest": fil_dest}
 
 
 def _envois_du_fil(row, idx):
@@ -901,13 +902,20 @@ def dernier_envoi(row, idx, maintenant=None):
 
 
 def repondu_apres(row, idx):
-    """Réponse de l'utilisateur POSTÉRIEURE à ce message (badge « Tu as répondu ») ; ISO ou None."""
+    """Réponse de l'utilisateur POSTÉRIEURE à ce message, ADRESSÉE À SON EXPÉDITEUR ; ISO
+    ou None. Répondre dans le même fil à quelqu'un d'autre (le collègue qui t'a transféré
+    la demande, par exemple) ne répond pas à cette personne-ci."""
     d0 = _dt_message(row.get("date_mail") or row.get("date"))
     if d0 is None:
         return None
     if d0.tzinfo is None:
         d0 = d0.replace(tzinfo=timezone.utc)
-    c = [d for d in _envois_du_fil(row, idx) if d > d0]
+    fkey = _sujet_fil(row.get("sujet"))
+    spec = (_adresses_spec(row.get("de_adresse") or row.get("de") or "") or [""])[0]
+    if not fkey or not spec or not idx:
+        return None
+    c = [d for d, dest in idx.get("fil_dest", {}).get(fkey, []) + idx["fil_sujet"].get(fkey, [])
+         if d > d0 and spec in dest]
     return max(c).isoformat() if c else None
 
 
