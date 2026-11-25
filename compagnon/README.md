@@ -227,6 +227,68 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.25 — lu / non lu fiable, IA bornée au récent
+
+- **1.25.1 — « la balle est dans ton camp »** : tu avais répondu dans une conversation,
+  la personne t'a réécrit directement et tu n'as pas répondu depuis plus de 20 h → la
+  conversation passe dans « Attend ta réponse », même si l'IA n'y a pas vu de demande
+  (cas réel : une offre demandée en retour d'une première réponse). Carte encadrée de
+  rouge, badge « on attend ta réponse depuis N jours » qui clignote ; le topo la passe
+  en « Maintenant ».
+- **1.25.2 — « tu as répondu » = répondu à CETTE personne** : une réponse dans le même
+  fil mais à quelqu'un d'autre (le collègue qui t'a transféré la demande) ne compte plus
+  comme une réponse à l'expéditeur.
+- **1.25.3 — topo fiable** : un jugement rendu « à froid » (plus de 14 jours après la
+  réception, lors d'un rattrapage d'historique) ne fait plus remonter un vieux mail par
+  ses dates — l'IA y lisait « demain » comme le lendemain du jugement. Dans le topo, une
+  demande sans réponse passe en tête de « Maintenant », jamais « sans urgence ».
+- **1.25.4 — « Toujours sans réponse — plus de deux semaines »** : en bas du cockpit,
+  les demandes (ou relances humaines) restées sans réponse depuis 15 à 60 jours, avec
+  leur ancienneté. Plus rien ne disparaît en silence au bout de deux semaines.
+
+- **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
+  vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie
+  désormais la liste des non lus des 14 derniers jours (`POST /api/sync/non-lus`, toutes
+  les 2 minutes) ; le filtre « non lus seulement » du cockpit redevient juste.
+- **L'IA du service ne juge que le courrier récent** (`ia_jours`, 14 par défaut) : avec
+  `ia_jours: 0`, le cycle remontait tout l'historique, 20 mails toutes les 5 minutes, à
+  tes frais. Plus large : `analyser-ia --jours N`, à la main.
+
+## Nouveautés 1.24 — l'actualité, pas l'historique
+
+- **« À traiter » = l'actualité** : les messages des 7 derniers jours (`cockpit_jours`),
+  les demandes restées sans réponse des 14 derniers jours et les échéances à venir.
+  Le reste se retrouve en choisissant une date « depuis » ; le cockpit dit combien sont
+  masqués.
+- **Répondu = réglé** : un message auquel tu as répondu ensuite (dossier Envoyés, depuis
+  n'importe quel ordinateur synchronisé en IMAP) sort de « À traiter » et du topo.
+- **« Attend ta réponse »** (nouvelle case, en tête) : une demande qui t'est adressée
+  (jugée « action attendue » par l'IA), sans réponse de ta part depuis plus de 20 h,
+  qu'elle soit lue ou non ; badge « sans réponse depuis N jours ». Le topo la passe en
+  « Maintenant » et le dit (« toujours sans réponse de ta part, depuis 4 jours »).
+- **Relève incrémentale** : un mbox inchangé n'est plus relu (4 minutes économisées à
+  chaque cycle sur 29 000 mails) ; un mbox qui a grandi n'est lu qu'à partir de
+  l'ancienne fin ; un mbox compacté est relu en entier. Idem pour les Envoyés.
+- **Santé des sources** : bandeau si la boîte lue n'a plus changé depuis 48 h, si une
+  autre boîte de réception Thunderbird (Flatpak, Snap, profil classique) est plus récente,
+  ou si le dossier Envoyés est introuvable. Commande `diagnostic` : ce que le compagnon
+  lit vraiment (fichiers, dates, dernier message, base).
+
+## Nouveautés 1.23.1 — cockpit plus clair
+
+- **Réglages manquants = réglages ouverts** : sans adresse ou sans fonction décrite, le
+  cockpit ouvre directement les réglages et dit ce qui manque (plus de simple lien).
+- **Enregistrer un profil modifié** propose tout de suite de rejuger (le nombre d'appels
+  IA est annoncé avant) ; le bouton « Enregistrer et rejuger » passe en premier plan dès
+  que le profil change.
+- **Barre de progression** du rejugement (« 37 / 120 message(s)… »), visible partout dans
+  le cockpit, même après un rechargement ; un second clic explique ce qui tourne déjà.
+- **Plus de « database is locked »** : l'analyse IA enregistre message par message (le
+  verrou n'est plus tenu pendant les appels IA), la base passe en journal WAL et chaque
+  accès attend jusqu'à 30 s. Le topo audio et les boutons restent utilisables pendant un
+  rejugement ; une erreur du topo s'affiche en clair.
+- **Journal systemd lisible** : sortie ligne par ligne.
+
 ## Nouveautés 1.23 — relié à GesEnt
 
 - L'extension Thunderbird `thunderbird-cockpit-button/` (2.0.0) peut **relier le poste à

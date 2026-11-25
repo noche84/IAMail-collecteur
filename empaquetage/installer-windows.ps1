@@ -20,13 +20,23 @@ if (-not (Test-Path $exe)) {
 
 $base = Join-Path $env:LOCALAPPDATA "IAMail"
 New-Item -ItemType Directory -Force -Path $base | Out-Null
-Copy-Item $exe (Join-Path $base "iamail.exe") -Force
+# Mise à jour : Windows refuse de remplacer un .exe en cours d'exécution → on arrête
+# d'abord le compagnon déjà installé (il est relancé, caché, à la fin du script).
+$cible = Join-Path $base "iamail.exe"
+Get-Process -Name iamail -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -eq $cible } |
+  ForEach-Object { Write-Host "• Arrêt du compagnon en cours (PID $($_.Id))"; Stop-Process -Id $_.Id -Force }
+Start-Sleep -Milliseconds 800
+Copy-Item $exe $cible -Force
 Write-Host "• Exécutable installé : $base\iamail.exe"
 
 # Config — créée une fois, à personnaliser (boîte, adresses, dossiers).
 $cfg = Join-Path $base "config.json"
 if (-not (Test-Path $cfg)) {
-  Copy-Item (Join-Path $ici "..\compagnon\config.exemple.json") $cfg -Force
+  # Release GitHub (à plat) : config.exemple.json à côté du script ; sinon le dépôt.
+  $exemple = @((Join-Path $ici "config.exemple.json"), (Join-Path $ici "..\compagnon\config.exemple.json")) |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+  Copy-Item $exemple $cfg -Force
   Write-Host "• Config créée : $cfg  (à personnaliser)"
 }
 

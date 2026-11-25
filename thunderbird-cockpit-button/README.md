@@ -1,6 +1,6 @@
 # IAMail — extension Thunderbird (cockpit, synchro « Traité », client GesEnt)
 
-Version 2.1.0 · Thunderbird 128 ou plus récent.
+Version 2.2.0 · Thunderbird 128 ou plus récent.
 
 ## Deux façons de travailler, boîte par boîte
 

@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -152,8 +153,109 @@ class CaseDuJour(Base):
 
     def test_tri_par_urgence_dans_la_case(self):
         self.ins("recent_haute", jours=0); self.juge("recent_haute", urgence="haute")
-        self.ins("ancien_critique", jours=2); self.juge("ancien_critique", urgence="critique")
+        self.ins("ancien_critique", jours=0); self.juge("ancien_critique", urgence="critique")
         self.assertEqual(self.cases()["maintenant"][0], "ancien_critique")
+
+    def test_jugement_a_froid_ne_fait_pas_remonter_un_vieux_mail(self):
+        """Cas réel : un mail de mars (« corrections du Te Deum pour demain », « nouveau
+        local ») jugé cette nuit pendant le rattrapage de l'historique : l'IA a pris
+        « demain » pour le 27 novembre. Ses dates ne doivent rien faire remonter. Un vieux
+        mail jugé à temps, dont l'échéance tombe maintenant, remonte toujours."""
+        demain = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        maintenant = datetime.now(timezone.utc).isoformat()
+        ev = json.dumps({"evenement": {"date": demain, "heure": "20:00", "lieu": "Tihange"}})
+        self.ins("te_deum", sujet="Corrections Te Deum", jours=250)
+        self.juge("te_deum", action=1, echeance=demain, ia_extensions=ev, ia_at=maintenant)
+        self.ins("bail", sujet="Renouvellement du bail", jours=60)
+        jadis = (datetime.now(timezone.utc) - timedelta(days=59)).isoformat()
+        self.juge("bail", action=1, echeance=demain, ia_at=jadis)
+        ids = [i for x in M.cockpit_liste(self.cfg["base_sqlite"]) for i in [y["id"] for y in x["items"]]]
+        self.assertNotIn("te_deum", ids)
+        self.assertIn("bail", ids)
+        t = M.elements_topo(self.cx, self.cfg)
+        self.assertNotIn("te_deum", [e["id"] for e in t["elements"]])
+        self.assertEqual(t["evenements"], [])
+        self.assertIn("bail", [e["id"] for e in t["elements"]])
+
+    def test_balle_dans_ton_camp(self):
+        """Cas réel (Véronique, 19/11) : tu réponds, elle te redemande une offre, tu ne
+        réponds plus. Même si l'IA n'y a pas vu d'action, la conversation remonte en tête."""
+        self.ins("veronique", de="Véronique de Barsy <debarsyv@gmail.com>",
+                 sujet="Re: Demande pour animation d'anniversaire", jours=6)
+        self.juge("veronique", urgence="normale", action=0)           # l'IA l'a ratée
+        self.ins("news", de="Promo <promo@shop.be>", sujet="Soldes", jours=6, bulk=1, expediteur_humain=0)
+        self.juge("news", urgence="basse", action=0)
+        il_y_a_7 = (datetime.now(timezone.utc) - timedelta(days=6, hours=3)).isoformat()
+        M.enregistrer_envoi(self.cx, "ma-reponse", il_y_a_7, ["debarsyv@gmail.com"],
+                            "Re: Demande pour animation d'anniversaire")
+        self.cx.commit()
+        c = {x["cle"]: x["items"] for x in M.cockpit_liste(self.cfg["base_sqlite"])}
+        self.assertEqual([i["id"] for i in c["attente"]], ["veronique"])
+        self.assertTrue(c["attente"][0]["balle"])
+        t = M.elements_topo(self.cx, self.cfg)
+        e = next(e for e in t["elements"] if e["id"] == "veronique")
+        self.assertEqual((e["case"], e["urgence"]), ("maintenant", "haute"))   # jamais « sans urgence »
+        self.assertEqual(t["elements"][0]["id"], "veronique")                  # en tête du topo
+
+    def test_repondre_au_collegue_n_est_pas_repondre_au_demandeur(self):
+        """Cas réel complet : Olivier (chorale) transfère la demande de Véronique ; tu
+        réponds à Véronique ; elle demande une offre ; tu réponds ensuite à Olivier dans
+        le même fil. Véronique attend toujours : elle doit rester en tête."""
+        self.ins("fwd", de="Chorale Tétracorde <chorale.tetracorde@gmail.com>",
+                 sujet="Fwd: Demande pour animation d'anniversaire", jours=7)
+        self.juge("fwd", action=1)
+        self.ins("veronique", de="Véronique de Barsy <debarsyv@gmail.com>",
+                 sujet="Re: Demande pour animation d'anniversaire", jours=6)
+        self.juge("veronique", action=1, ia_extensions=json.dumps({"concerne": "moi"}))
+        t = lambda j, h=0: (datetime.now(timezone.utc) - timedelta(days=j, hours=h)).isoformat()
+        M.enregistrer_envoi(self.cx, "a-veronique", t(6, 3), ["debarsyv@gmail.com"],
+                            "Re: Demande pour animation d'anniversaire", in_reply_to="fwd")
+        M.enregistrer_envoi(self.cx, "a-olivier", t(5), ["chorale.tetracorde@gmail.com"],
+                            "Re: Fwd: Demande pour animation d'anniversaire", in_reply_to="fwd")
+        self.cx.commit()
+        infos = {}
+        c = {x["cle"]: [i["id"] for i in x["items"]]
+             for x in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos)}
+        self.assertIn("veronique", c["attente"])
+        self.assertNotIn("fwd", [i for v in c.values() for i in v])       # Olivier : répondu
+        self.assertEqual(infos["masques_repondus"], 1)
+
+    def test_actualite_et_demande_sans_reponse(self):
+        """« À traiter » = l'actualité : les derniers jours, plus les demandes restées sans
+        réponse (lues ou non), plus les échéances à venir. Une demande de samedi sans
+        réponse remonte en tête ; un vieux « pour info » et un mail répondu sortent."""
+        self.ins("devis_samedi", sujet="Devis pour la chorale", jours=4, non_lu=0)
+        self.juge("devis_samedi", urgence="normale", action=1)
+        self.ins("info_lundi", jours=2); self.juge("info_lundi", urgence="basse", action=0)
+        self.ins("vieux_info", jours=40); self.juge("vieux_info", urgence="basse", action=0)
+        self.ins("vieille_demande", jours=30); self.juge("vieille_demande", action=1)
+        self.ins("echeance", jours=30); self.juge("echeance", action=0, echeance=AUJ)
+        self.ins("repondu_lundi", sujet="Répétition", jours=2); self.juge("repondu_lundi", action=1)
+        M.enregistrer_envoi(self.cx, "env1", (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                            ["jean.dupont@client.be"], "Re: Répétition")
+        self.cx.commit()
+        infos = {}
+        c = {x["cle"]: [i["id"] for i in x["items"]]
+             for x in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos)}
+        self.assertEqual(c["attente"], ["devis_samedi"])
+        tous = [i for v in c.values() for i in v]
+        self.assertIn("info_lundi", tous)
+        self.assertIn("echeance", tous)
+        for absent in ("vieux_info", "repondu_lundi"):
+            self.assertNotIn(absent, tous)
+        # Une demande d'il y a un mois, toujours sans réponse : pas perdue, en bas.
+        self.assertEqual(c["oublies"], ["vieille_demande"])
+        self.assertEqual((infos["masques_anciens"], infos["masques_repondus"]), (1, 1))
+        it = next(i for x in M.cockpit_liste(self.cfg["base_sqlite"]) for i in x["items"] if i["id"] == "devis_samedi")
+        self.assertEqual(it["attente_depuis"], 4)
+        # Le topo : la demande sans réponse passe devant, le mail répondu n'y est plus.
+        t = M.elements_topo(self.cx, self.cfg)
+        ids = [e["id"] for e in t["elements"]]
+        self.assertNotIn("repondu_lundi", ids)
+        e = next(e for e in t["elements"] if e["id"] == "devis_samedi")
+        self.assertEqual((e["case"], e["sans_reponse_jours"]), ("maintenant", 4))
+        court, complet = M.script_topo_gabarit(t)
+        self.assertIn("Toujours sans réponse de ta part, depuis 4 jours", complet)
 
 
 class Memoire(Base):
@@ -283,6 +385,24 @@ class VecteursCommuns(unittest.TestCase):
         for c in json.loads((self.DOSSIER / "date_du_jour.json").read_text(encoding="utf-8"))["cas"]:
             with self.subTest(c["date"]):
                 self.assertEqual(M._date_du_jour_txt(c["date"]), c["attendu"])
+
+
+class ServiceIa(Base):
+    def test_le_service_ne_juge_que_le_courrier_recent(self):
+        """Sans borne, le cycle remontait tout l'historique (20 mails par cycle, payants)."""
+        self.ins("recent", jours=1)
+        self.ins("vieux", jours=60)
+        vu = []
+        M.appeler_mistral = lambda cfg_ia, sysm, ent, **k: (vu.append(ent), json.dumps(BON))[1]
+        garde = M.cmd_import
+        M.cmd_import = lambda a: None
+        try:
+            self.cx.commit()
+            M.pipeline_once(str(self.cfg_path), utiliser_ia=True)
+        finally:
+            M.cmd_import = garde
+        src = dict(self.cx.execute("SELECT message_id, ia_source FROM messages").fetchall())
+        self.assertEqual((src["recent"], src["vieux"]), ("mistral", None))
 
 
 class Rejugement(Base):
@@ -451,6 +571,80 @@ class Serveur(Base):
         self.assertEqual((st, json.loads(b)["n"], json.loads(b)["max"]), (200, 0, 300))
         self.assertEqual(self.cx.execute("SELECT ia_urgence FROM messages").fetchone()[0], "haute")
 
+    def test_rejugement_suivi_et_ecritures_pendant(self):
+        """Rejuger : progression lisible (fait/total), un second lancement explique ce qui
+        tourne, et le cockpit peut écrire (traiter, topo) pendant les appels IA."""
+        for i in range(4):
+            self.ins(f"r{i}", sujet=f"Demande {i}")
+        self.cfg["utilisateur"] = {"nom": "A", "fonction": "Informatique", "profil": ""}
+        verrou, vus = threading.Event(), []
+
+        def lent(cfg_ia, systeme, entree):
+            vus.append(1)
+            if len(vus) == 2:
+                verrou.wait(10)             # appel IA « long » : le cockpit doit rester libre
+            return json.dumps(BON)
+        M.appeler_mistral = lent
+        st, _, b = self.req("POST", "/api/rejuger", {"jours": 14})
+        self.assertEqual(st, 200)
+        for _ in range(100):
+            p = json.loads(self.req("GET", "/api/progression")[2])["rejuge"]
+            if p["fait"] >= 1 and p["total"]:
+                break
+            time.sleep(0.05)
+        self.assertTrue(p["en_cours"] and p["total"] >= 4 and p["fait"] >= 1, p)
+        st, _, b = self.req("POST", "/api/rejuger", {"jours": 14})
+        self.assertEqual((st, json.loads(b)["erreur"]), (409, "en_cours"))
+        self.assertIn("déjà en cours", json.loads(b)["message"])
+        t0 = time.time()                                                  # écrire pendant l'appel IA
+        self.assertEqual(self.req("POST", "/api/action", {"id": "s1", "etat": "traite"})[0], 200)
+        self.assertLess(time.time() - t0, 5)
+        verrou.set()
+        for _ in range(200):
+            p = json.loads(self.req("GET", "/api/progression")[2])["rejuge"]
+            if not p["en_cours"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(p["en_cours"])
+        self.assertEqual((p["fait"], p["bilan"]["erreurs"]), (p["total"], 0))
+        self.assertGreaterEqual(p["bilan"]["juges"], 4)
+
+    def test_non_lus_depuis_thunderbird(self):
+        """IMAP : le mbox dit « lu » pour tout ; l'extension envoie les vrais non lus."""
+        for i in range(3):
+            self.ins(f"n{i}", non_lu=0)
+        self.ins("ancien", jours=30, non_lu=1)
+        depuis = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        st, _, b = self.req("POST", "/api/sync/non-lus", {"depuis": depuis, "non_lus": ["<n1>", "n2"]},
+                            Origin="moz-extension://abc")
+        self.assertEqual((st, json.loads(b)["non_lus"]), (200, 2))
+        lus = dict(self.cx.execute("SELECT message_id, non_lu FROM messages").fetchall())
+        self.assertEqual((lus["n0"], lus["n1"], lus["n2"], lus["ancien"]), (0, 1, 1, 1))  # hors fenêtre : intact
+        self.assertEqual(self.req("POST", "/api/sync/non-lus", {"non_lus": []})[0], 400)
+
+    def test_reglages_bloquants(self):
+        """Sans adresses ni fonction, le cockpit ouvre directement les réglages."""
+        b = json.loads(self.req("GET", "/api/reglages")[2])["bloquants"]
+        self.assertEqual(len(b), 1)                                       # fonction absente
+        self.assertIn("fonction", b[0])
+        self.req("POST", "/api/reglages", {"utilisateur": {"fonction": "Informatique"}, "mes_adresses": []})
+        b = json.loads(self.req("GET", "/api/reglages")[2])["bloquants"]
+        self.assertEqual(len(b), 1)
+        self.assertIn("adresses", b[0])
+        self.req("POST", "/api/reglages", {"utilisateur": {"fonction": "Informatique"}, "mes_adresses": ["moi@ccl.be"]})
+        r = json.loads(self.req("GET", "/api/reglages")[2])
+        self.assertEqual((r["bloquants"], r["a_rejuger"]), ([], True))
+
+    def test_topo_en_erreur_reste_lisible(self):
+        garde = M.construire_script_topo
+        M.construire_script_topo = lambda *a, **k: (_ for _ in ()).throw(M.sqlite3.OperationalError("database is locked"))
+        try:
+            st, _, b = self.req("POST", "/api/topo-audio", {})
+        finally:
+            M.construire_script_topo = garde
+        self.assertEqual((st, json.loads(b)["erreur"]), (500, "topo"))
+        self.assertIn("Réessaie", json.loads(b)["message"])
+
     def test_relie_a_gesent_lecture_seule(self):
         """Relié à GesEnt (annoncé par l'extension) : GesEnt fait foi, cockpit en lecture
         seule, plus d'étiquette posée par le cockpit, plus d'appel IA local ; délié : retour."""
@@ -502,6 +696,51 @@ class Envoyes(Base):
         mb.flush(); mb.close()
         return chemin
 
+    def test_releve_incrementale_et_sante_des_sources(self):
+        """Un mbox inchangé n'est pas relu ; un mbox qui grandit n'est lu qu'à partir de
+        l'ancienne fin ; un mbox réécrit est relu en entier. Le cockpit prévient quand la
+        boîte lue ne bouge plus ou qu'une autre, plus récente, existe."""
+        mail = lambda i, j=0: (f"From: Anne <anne@x.be>\nTo: moi@ccl.be\nSubject: Mail {i}\n"
+                               f"Message-ID: <m{i}@x.be>\nX-Mozilla-Status: 0000\n"
+                               f"Date: {(datetime.now(timezone.utc) - timedelta(days=j)).strftime('%a, %d %b %Y %H:%M:%S +0000')}\n\nCorps {i}.\n")
+        inbox = self.boite("INBOX", [mail(1), mail(2)])
+        self.boite("Sent", [])
+        self.cfg["mbox_sources"] = [str(inbox)]
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["archive"]), (2, 2))
+        self.assertTrue(M.importer_mbox(self.cfg, self.cx, inbox, incremental=True).get("inchange"))
+        mb = mailbox.mbox(str(inbox)); mb.add(mail(3).encode()); mb.flush(); mb.close()
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["archive"]), (1, 1))                   # seulement la suite
+        self.assertEqual(self.cx.execute("SELECT non_lu FROM messages WHERE message_id='m3@x.be'").fetchone()[0], 1)
+        mb = mailbox.mbox(str(inbox)); mb.remove(next(iter(mb.keys()))); mb.flush(); mb.close()  # compacté
+        b = M.importer_mbox(self.cfg, self.cx, inbox, incremental=True)
+        self.assertEqual((b["lus"], b["doublon"]), (2, 2))                  # relu en entier, rien perdu
+        # Santé : rien d'alarmant, puis boîte figée depuis 3 jours, puis Envoyés absents.
+        self.assertEqual(M.alertes_sources(self.cfg), [])
+        e = M.etat_sources(self.cfg)
+        self.assertTrue(e["sources"][0]["dernier_message"])
+        vieux = time.time() - 3 * 86400
+        os.utime(inbox, (vieux, vieux))
+        self.assertTrue(any("n'a plus changé" in a for a in M.alertes_sources(self.cfg)))
+        (Path(self.tmp.name) / "Sent").unlink()
+        self.assertTrue(any("Envoyés introuvable" in a for a in M.alertes_sources(self.cfg)))
+        self.cfg["mbox_sources"] = ["/nulle/part/INBOX"]
+        self.assertTrue(any("introuvable" in a for a in M.alertes_sources(self.cfg)))
+        # Une autre boîte de réception, plus récente, dans un profil Flatpak.
+        garde = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmp.name
+        try:
+            autre = Path(self.tmp.name) / ".var/app/org.mozilla.Thunderbird/.thunderbird/abc.default/ImapMail/imap.gmail.com/INBOX"
+            autre.parent.mkdir(parents=True)
+            autre.write_bytes(inbox.read_bytes())
+            self.cfg["mbox_sources"] = [str(inbox)]
+            al = M.alertes_sources(self.cfg)
+            self.assertTrue(any("plus récente" in a and "org.mozilla.Thunderbird" in a for a in al), al)
+        finally:
+            if garde is not None:
+                os.environ["HOME"] = garde
+
     def test_releve_thunderbird_et_entree_ia(self):
         il_y_a = lambda j, h=9: (datetime.now(timezone.utc) - timedelta(days=j)).replace(
             hour=h, minute=0, second=0, microsecond=0).strftime("%a, %d %b %Y %H:%M:%S +0000")
@@ -535,10 +774,16 @@ class Envoyes(Base):
         self.assertIn("le destinataire lui a écrit 1 fois ces 90 derniers jours", p3)
         # relances : p1 et p2 sont antérieurs à la réponse → plus aucune relance comptée
         self.assertNotIn("RELANCE", p3)
-        # cockpit : p2 a reçu une réponse après lui, p3 non
-        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"]) for i in c["items"]}
-        self.assertTrue(items["p2@client.be"]["repondu"])
+        # cockpit : p2 a reçu une réponse après lui → réglé, sorti de « À traiter » ;
+        # p3 non. Avec une date choisie, tout revient, avec le badge.
+        infos = {}
+        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"], infos=infos) for i in c["items"]}
+        self.assertNotIn("p2@client.be", items)
+        self.assertGreaterEqual(infos["masques_repondus"], 1)
         self.assertIsNone(items["p3@client.be"]["repondu"])
+        items = {i["id"]: i for c in M.cockpit_liste(self.cfg["base_sqlite"], depuis="2000-01-01")
+                 for i in c["items"]}
+        self.assertTrue(items["p2@client.be"]["repondu"])
 
     def test_rattachement_par_sujet_exige_l_expediteur_parmi_les_destinataires(self):
         self.ins("q1", de="Anne <anne@x.be>", sujet="Facture", jours=1)
