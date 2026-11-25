@@ -229,6 +229,13 @@ Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 
 ## Nouveautés 1.25 — lu / non lu fiable, IA bornée au récent
 
+- **1.25.1 — « la balle est dans ton camp »** : tu avais répondu dans une conversation,
+  la personne t'a réécrit directement et tu n'as pas répondu depuis plus de 20 h → la
+  conversation passe dans « Attend ta réponse », même si l'IA n'y a pas vu de demande
+  (cas réel : une offre demandée en retour d'une première réponse). Carte encadrée de
+  rouge, badge « on attend ta réponse depuis N jours » qui clignote ; le topo la passe
+  en « Maintenant ».
+
 - **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
   vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie
   désormais la liste des non lus des 14 derniers jours (`POST /api/sync/non-lus`, toutes

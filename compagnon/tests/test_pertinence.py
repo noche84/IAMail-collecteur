@@ -156,6 +156,25 @@ class CaseDuJour(Base):
         self.ins("ancien_critique", jours=0); self.juge("ancien_critique", urgence="critique")
         self.assertEqual(self.cases()["maintenant"][0], "ancien_critique")
 
+    def test_balle_dans_ton_camp(self):
+        """Cas réel (Véronique, 19/11) : tu réponds, elle te redemande une offre, tu ne
+        réponds plus. Même si l'IA n'y a pas vu d'action, la conversation remonte en tête."""
+        self.ins("veronique", de="Véronique de Barsy <debarsyv@gmail.com>",
+                 sujet="Re: Demande pour animation d'anniversaire", jours=6)
+        self.juge("veronique", urgence="normale", action=0)           # l'IA l'a ratée
+        self.ins("news", de="Promo <promo@shop.be>", sujet="Soldes", jours=6, bulk=1, expediteur_humain=0)
+        self.juge("news", urgence="basse", action=0)
+        il_y_a_7 = (datetime.now(timezone.utc) - timedelta(days=6, hours=3)).isoformat()
+        M.enregistrer_envoi(self.cx, "ma-reponse", il_y_a_7, ["debarsyv@gmail.com"],
+                            "Re: Demande pour animation d'anniversaire")
+        self.cx.commit()
+        c = {x["cle"]: x["items"] for x in M.cockpit_liste(self.cfg["base_sqlite"])}
+        self.assertEqual([i["id"] for i in c["attente"]], ["veronique"])
+        self.assertTrue(c["attente"][0]["balle"])
+        t = M.elements_topo(self.cx, self.cfg)
+        e = next(e for e in t["elements"] if e["id"] == "veronique")
+        self.assertEqual(e["case"], "maintenant")
+
     def test_actualite_et_demande_sans_reponse(self):
         """« À traiter » = l'actualité : les derniers jours, plus les demandes restées sans
         réponse (lues ou non), plus les échéances à venir. Une demande de samedi sans

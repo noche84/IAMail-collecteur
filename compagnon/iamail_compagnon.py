@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.25.0"
+VERSION = "1.25.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -2800,7 +2800,8 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
             fen = (maintenant_utc - timedelta(days=jours or COCKPIT_JOURS)).isoformat()
             att = (maintenant_utc - timedelta(days=ATTENTE_JOURS)).isoformat()
             ech = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-            filtre = ("(date_mail >= ? OR (ia_action=1 AND date_mail >= ?) OR "
+            filtre = ("(date_mail >= ? OR ((ia_action=1 OR (pour_moi=1 AND expediteur_humain=1 "
+                      "AND COALESCE(bulk,0)=0)) AND date_mail >= ?) OR "
                       "(ia_echeance IS NOT NULL AND ia_echeance != 'aucune' AND ia_echeance >= ?))")
             infos["masques_anciens"] = cx.execute(
                 f"SELECT COUNT(*) FROM messages WHERE {' AND '.join(conds)} AND NOT {filtre}",
@@ -2810,12 +2811,12 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
     cols = ["id", "de", "sujet", "date", "resume", "tache", "echeance", "ia_urgence",
             "question", "non_lu", "ia_source", "urgence", "pour_moi", "important",
             "ia_action", "justification", "ia_extensions", "raison", "corrige_at",
-            "precision"]
+            "precision", "expediteur_humain", "bulk"]
     rows = cx.execute(
         f"""SELECT message_id, de_adresse, sujet, date_mail, ia_resume, ia_tache,
             ia_echeance, ia_urgence, ia_question, non_lu, ia_source, urgence, pour_moi,
             important, ia_action, ia_justification, ia_extensions, raison, corrige_at,
-            precision
+            precision, expediteur_humain, bulk
             FROM messages WHERE {' AND '.join(conds)} ORDER BY date_mail DESC
             {'LIMIT 500' if vue == 'masse' else ''}""",
         params).fetchall()
@@ -2867,11 +2868,18 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
         dm = _dt_message(it["date"])
         if dm is not None and dm.tzinfo is None:
             dm = dm.replace(tzinfo=timezone.utc)
-        if (vue == "atraiter" and juge and it["ia_action"] == 1 and not rep_
-                and it["concerne"] in (None, "moi") and dm is not None and dm < seuil_attente
-                and it["case_topo"] not in ("agenda",)):
+        # « La balle est dans ton camp » : tu avais déjà répondu dans cette conversation,
+        # la personne t'a réécrit ensuite (à toi, en direct) et tu n'as pas répondu. Sûr,
+        # même si l'IA n'y a pas vu de demande.
+        relance_humaine = (it["pour_moi"] == 1 and it["expediteur_humain"] == 1 and not it["bulk"]
+                           and dernier_envoi({"sujet": it["sujet"], "de_adresse": it["de"],
+                                              "date_mail": it["date"]}, envois) is not None)
+        demande_ia = juge and it["ia_action"] == 1 and it["concerne"] in (None, "moi")
+        if (vue == "atraiter" and (demande_ia or relance_humaine) and not rep_
+                and dm is not None and dm < seuil_attente and it["case_topo"] not in ("agenda",)):
             it["case_topo"] = "attente"
             it["attente_depuis"] = max(1, (datetime.now(timezone.utc) - dm).days)
+            it["balle"] = bool(relance_humaine)
         spec = (_adresses_spec(it["de"] or "") or [""])[0]
         p = profils.get(spec)
         it["fil"] = _sujet_fil(it["sujet"])          # regroupement par conversation
@@ -2879,7 +2887,7 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
         it["freq"] = p["n"] if p else 0              # combien de mails de cet expéditeur
         it["actif"] = bool(p and p["n"] >= PARAMS["profil_actif_n_min"]
                            and p.get("recent", 0) >= PARAMS["profil_actif_recent_min"])
-        for k in ("ia_urgence", "raison", "ia_action", "pour_moi", "important"):
+        for k in ("ia_urgence", "raison", "ia_action", "pour_moi", "important", "expediteur_humain", "bulk"):
             it.pop(k, None)
         par_case.get(it["case_topo"] or "aucune", par_case["aucune"]).append(it)
     for items in par_case.values():        # le plus urgent d'abord, puis le plus récent
@@ -3580,7 +3588,9 @@ dialog label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
 dialog input[type=text],dialog textarea{width:100%;font:14px system-ui;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--tx)}
 dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;color:var(--mut);margin-top:4px}
 #topotexte{white-space:pre-wrap;font-size:13px;margin-top:8px}
-.badge.att{background:#fef0c7;color:#93370d}
+.badge.att{background:#fee4e2;color:#b42318;font-weight:600;animation:pouls 1.4s ease-in-out infinite}
+.item.attente,.group.attente{border:2px solid #f04438!important;box-shadow:0 0 0 3px #fee4e2}
+@keyframes pouls{0%,100%{opacity:1}50%{opacity:.45}}
 .masques{max-width:840px;margin:14px auto;color:var(--mut);font-size:13px;text-align:center}
 #progres{display:none;max-width:840px;margin:10px auto 0;padding:10px 14px;border:1px solid #b2ddff;background:#eff8ff;color:#175cd3;border-radius:10px;font-size:14px}
 #progres .barre{height:6px;background:#d1e9ff;border-radius:3px;margin-top:6px;overflow:hidden}
@@ -3680,7 +3690,8 @@ function carte(it){
         <button class="mini" data-a="preciser" data-t="Non, pour information">Non, pour information</button>
         <input type="text" maxlength="500" placeholder="Ou réponds en quelques mots…">
         <button class="mini" data-a="preciser">Répondre</button></div>`):'';
-  const attBadge=it.attente_depuis?`<span class="badge att" title="Demande qui t’est adressée, sans réponse de ta part dans ton dossier Envoyés">⏳ sans réponse depuis ${it.attente_depuis} jour${it.attente_depuis>1?'s':''}</span>`:'';
+  const attBadge=it.attente_depuis?`<span class="badge att" title="${it.balle?'Tu avais répondu dans cette conversation ; on t’a réécrit et tu n’as pas encore répondu':'Demande qui t’est adressée, sans réponse de ta part dans ton dossier Envoyés'}">⏳ ${it.balle?'on attend ta réponse':'sans réponse'} depuis ${it.attente_depuis} jour${it.attente_depuis>1?'s':''}</span>`:'';
+  if(it.attente_depuis)d.classList.add('attente');
   const repBadge=it.repondu?`<span class="badge ok" title="Trouvé dans ton dossier Envoyés : marque-le Traité si l’affaire est close">✓ tu as répondu le ${esc(it.repondu)}</span>`:'';
   const titre=it.tache||it.resume||it.sujet||'(sans objet)';
   const res=(it.resume&&it.resume!==titre)?`<div class="resume">${esc(it.resume)}</div>`:'';
@@ -3697,7 +3708,9 @@ function groupe(items){
   const top=items.reduce((a,b)=>(b.actif||b.freq>a.freq)?b:a,items[0]);
   const rem=state.vue==='reporte'?'remettre':'reporte';
   const remLbl=state.vue==='reporte'?'Tout remettre':'Tout reporter';
-  head.innerHTML=`<div>💬 ${esc(suj)} <span class="badge">×${items.length} dans ce fil</span> ${freqBadge(top)}</div>
+  const att=items.find(x=>x.attente_depuis);if(att)g.classList.add('attente');
+  const attG=att?` <span class="badge att">⏳ ${att.balle?'on attend ta réponse':'sans réponse'} depuis ${att.attente_depuis} jour${att.attente_depuis>1?'s':''}</span>`:'';
+  head.innerHTML=`<div>💬 ${esc(suj)} <span class="badge">×${items.length} dans ce fil</span> ${freqBadge(top)}${attG}</div>
     <div class="btns"><button class="ok" data-g="traite">Tout traiter</button>
       <button data-g="${rem}">${remLbl}</button></div>`;
   head.querySelectorAll('button').forEach(b=>b.onclick=()=>actionGroupe(items,b.dataset.g,g));
@@ -4054,7 +4067,7 @@ def elements_topo(cx, cfg):
     cols = ["message_id", "de_adresse", "sujet", "date_mail", "ia_source", "ia_urgence",
             "ia_echeance", "ia_action", "ia_tache", "ia_resume", "ia_justification",
             "ia_question", "ia_categorie", "ia_extensions", "urgence", "pour_moi",
-            "important", "suspect"]
+            "important", "suspect", "expediteur_humain", "bulk"]
     base = ("SELECT " + ", ".join(cols) + " FROM messages WHERE etat IS NULL "
             "AND categorie IS NOT NULL AND NOT " + _SQL_MASSE)
     rows = cx.execute(
@@ -4100,7 +4113,9 @@ def elements_topo(cx, cfg):
         dm = _dt_message(m["date_mail"] or "")
         if dm is not None and dm.tzinfo is None:
             dm = dm.replace(tzinfo=timezone.utc)
-        if (juge and m["ia_action"] == 1 and e["concerne"] in (None, "moi")
+        relance_humaine = (m["pour_moi"] == 1 and m["expediteur_humain"] == 1 and not m["bulk"]
+                           and dernier_envoi(m, envois) is not None)
+        if (((juge and m["ia_action"] == 1 and e["concerne"] in (None, "moi")) or relance_humaine)
                 and dm is not None and dm < seuil_attente):
             # Demande restée sans réponse : elle passe devant, avec son ancienneté.
             e["case"] = "maintenant"
