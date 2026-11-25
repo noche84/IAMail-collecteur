@@ -227,6 +227,21 @@ Table `messages` : `message_id` (clé), `de_adresse`, `destinataires`, `copies`,
 Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 `python3 -I moteur/tests/run_conformance.py`.
 
+## Nouveautés 1.23.1 — cockpit plus clair
+
+- **Réglages manquants = réglages ouverts** : sans adresse ou sans fonction décrite, le
+  cockpit ouvre directement les réglages et dit ce qui manque (plus de simple lien).
+- **Enregistrer un profil modifié** propose tout de suite de rejuger (le nombre d'appels
+  IA est annoncé avant) ; le bouton « Enregistrer et rejuger » passe en premier plan dès
+  que le profil change.
+- **Barre de progression** du rejugement (« 37 / 120 message(s)… »), visible partout dans
+  le cockpit, même après un rechargement ; un second clic explique ce qui tourne déjà.
+- **Plus de « database is locked »** : l'analyse IA enregistre message par message (le
+  verrou n'est plus tenu pendant les appels IA), la base passe en journal WAL et chaque
+  accès attend jusqu'à 30 s. Le topo audio et les boutons restent utilisables pendant un
+  rejugement ; une erreur du topo s'affiche en clair.
+- **Journal systemd lisible** : sortie ligne par ligne.
+
 ## Nouveautés 1.23 — relié à GesEnt
 
 - L'extension Thunderbird `thunderbird-cockpit-button/` (2.0.0) peut **relier le poste à

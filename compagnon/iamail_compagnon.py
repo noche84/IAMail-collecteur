@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.23.0"
+VERSION = "1.23.1"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -115,9 +115,21 @@ def cmd_init(args):
 # ----------------------------------------------------------------------------
 # Base SQLite
 # ----------------------------------------------------------------------------
+def _ouvrir_db(chemin_db):
+    """Connexion SQLite partagée par le service, le cockpit et les tâches de fond :
+    attente jusqu'à 30 s si un autre écrit (au lieu de « database is locked » après 5 s)
+    et journal WAL (lire pendant qu'un autre écrit)."""
+    cx = sqlite3.connect(chemin_db, timeout=30)
+    try:
+        cx.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        pass
+    return cx
+
+
 def connexion(chemin_db):
     Path(chemin_db).parent.mkdir(parents=True, exist_ok=True)
-    cx = sqlite3.connect(chemin_db)
+    cx = _ouvrir_db(chemin_db)
     cx.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             message_id   TEXT PRIMARY KEY,
@@ -2400,6 +2412,9 @@ def cmd_analyser_ia(args):
         return
 
     print(f"[{NOM}] IA ({fournisseur}) sur {len(rows)} message(s)…")
+    progres = getattr(args, "progres", None)          # rappel (fait, total) du cockpit
+    if progres:
+        progres(0, len(rows))
 
     def repli(row, source):
         """Pas de jugement IA : le tri déterministe tient lieu de filet (jamais enterré).
@@ -2414,7 +2429,11 @@ def cmd_analyser_ia(args):
     faits, erreurs, questions, pannes = 0, 0, 0, 0
     t0 = time.time()
     envois = index_envoyes(cx)
-    for r in rows:
+    for n_vu, r in enumerate(rows):
+        if progres:
+            progres(n_vu, len(rows))
+        if n_vu:
+            cx.commit()           # un message à la fois : jamais de verrou tenu pendant les appels IA
         row = dict(zip(cols, r))
         row["dernier_envoi"] = dernier_envoi(row, envois)   # moteur 2.4 (dossier Envoyés)
         spec = (_adresses_spec(row["de_adresse"] or "") or [""])[0]
@@ -2483,11 +2502,12 @@ def cmd_analyser_ia(args):
         faits += 1
         if res.get("question"):
             questions += 1
-        if faits % 50 == 0:
-            cx.commit()
     cx.commit()
+    if progres:
+        progres(len(rows), len(rows))
     print(f"[{NOM}] jugés : {faits}, questions soulevées : {questions}, "
           f"erreurs : {erreurs}, en {time.time()-t0:.0f}s")
+    args.bilan = {"juges": faits, "questions": questions, "erreurs": erreurs}
     cx.close()
 
 
@@ -2640,7 +2660,7 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None):
     """Tout message classé est visible (zéro perte) : jugé par l'IA, ou — IA en panne,
     réponse rejetée, pas encore passée — rangé par le tri déterministe. Le courrier de
     masse non important a sa propre vue. La case est recalculée à la date du jour."""
-    cx = sqlite3.connect(db)
+    cx = _ouvrir_db(db)
     profils, _, _ = profils_expediteurs(cx)   # mémoire : fréquence par expéditeur
     conds = ["categorie IS NOT NULL"]
     params = []
@@ -2871,6 +2891,16 @@ def alertes_reglages(cfg):
     return out
 
 
+def alertes_bloquantes(cfg):
+    """Ce qui empêche un tri utile : le cockpit ouvre directement les réglages."""
+    out = []
+    if not (cfg.get("mes_adresses") or []):
+        out.append("tes adresses (sans elles, impossible de savoir ce qui t'est adressé)")
+    if _config_ia(cfg).get("fournisseur", "mock") != "mock" and not _utilisateur_txt(cfg):
+        out.append("ta fonction (sans elle, l'IA ne sait pas pour qui elle trie)")
+    return out
+
+
 # Étiquette partagée appliquée dans Thunderbird quand un mail est « Traité »
 # dans le cockpit (retour-mail). La clé est l'identifiant stable côté Thunderbird.
 ETIQUETTE_TRAITE = {"cle": "iamail_traite", "nom": "Traité IAMail", "couleur": "#12b76a"}
@@ -2916,7 +2946,8 @@ def enregistrer_relie(cfg, corps):
 def faire_cockpit_handler(cfg):
     db = cfg["base_sqlite"]
     etat_audio = {"chemin": None}
-    etat_rejuge = {"en_cours": False}
+    etat_rejuge = {"en_cours": False, "fait": 0, "total": 0, "debut": None, "fin": None,
+                   "bilan": None, "erreur": None}
     etat_relie = lire_relie(cfg)
 
     class H(http.server.BaseHTTPRequestHandler):
@@ -3003,6 +3034,9 @@ def faire_cockpit_handler(cfg):
                             "ia": {"fournisseur": cfg_ia.get("fournisseur", "mock"),
                                    "modele": cfg_ia.get("modele", "")},
                             "rejuge_en_cours": etat_rejuge["en_cours"],
+                            "rejuge": dict(etat_rejuge),
+                            "bloquants": alertes_bloquantes(cfg),
+                            "a_rejuger": bool(cfg.get("profil_a_rejuger")),
                             "relie": etat_relie})
             elif u.path == "/audio":
                 ch = etat_audio["chemin"]
@@ -3017,12 +3051,14 @@ def faire_cockpit_handler(cfg):
                     self._json({"erreur": "pas d'audio"}, 404)
             elif u.path == "/api/relie":
                 self._json(etat_relie)
+            elif u.path == "/api/progression":
+                self._json({"rejuge": dict(etat_rejuge)})
             elif u.path == "/api/sync/pour-client" and etat_relie["relie"]:
                 # Relié : c'est GesEnt qui pose l'étiquette, plus le cockpit local.
                 self._json({"etiquette": ETIQUETTE_TRAITE, "a_marquer": [], "a_demarquer": []})
             elif u.path == "/api/sync/pour-client":
                 # Ce que l'extension Thunderbird doit APPLIQUER dans la boîte.
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 a_marquer = [r[0] for r in cx.execute(
                     "SELECT message_id FROM messages WHERE etat='traite' "
                     "AND (tb_sync IS NULL OR tb_sync!='traite') "
@@ -3062,8 +3098,14 @@ def faire_cockpit_handler(cfg):
                                    "message": "Ce poste est relié à GesEnt : agissez dans GesEnt."}, 409)
             if self.path == "/api/topo-audio":
                 # POST (et non GET) : la génération peut appeler l'IA, donc coûter.
-                court, complet, source = construire_script_topo(
-                    cfg, utiliser_ia=not c.get("sans_ia"))
+                try:
+                    court, complet, source = construire_script_topo(
+                        cfg, utiliser_ia=not c.get("sans_ia"))
+                except Exception as e:
+                    print(f"[{NOM}] topo : {e}", file=sys.stderr)
+                    return self._json({"ok": False, "erreur": "topo", "message":
+                                       "Le topo n'a pas pu être préparé (" + str(e) + "). "
+                                       "Réessaie dans un instant."}, 500)
                 sortie = str(Path(cfg.get("dossier_destination") or ".") / "topo.wav")
                 chemin, err = generer_audio(complet, cfg, sortie)
                 etat_audio["chemin"] = chemin
@@ -3074,7 +3116,7 @@ def faire_cockpit_handler(cfg):
             elif self.path == "/api/preciser":
                 # Réponse à la question de l'IA : gardée, servie en exemple, et le message
                 # est rejugé avec elle (un seul appel IA) — sauf jugement corrigé à la main.
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 rejuger = preciser(cx, mid, c.get("texte"))
                 cx.close()
                 cfg_ia = _config_ia(cfg)
@@ -3087,7 +3129,7 @@ def faire_cockpit_handler(cfg):
                         limite=1, jours=0, compter=False, ids=[mid])), daemon=True).start()
                 self._json({"ok": True, "rejuge": bool(rejuger)})
             elif self.path == "/api/corriger":
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 ok = corriger_jugement(cx, mid, c.get("quoi"))
                 cx.close()
                 self._json({"ok": ok}, 200 if ok else 400)
@@ -3105,36 +3147,48 @@ def faire_cockpit_handler(cfg):
                 # automatique (appels IA payants, bornés ; corrections humaines exclues).
                 jours = max(1, min(60, int(c.get("jours") or REJUGE_JOURS)))
                 if c.get("compter"):
-                    cx = sqlite3.connect(db)
+                    cx = _ouvrir_db(db)
                     n = len(selection_ia(cx, True, jours, REJUGE_MAX))
                     cx.close()
                     return self._json({"ok": True, "jours": jours, "n": n, "max": REJUGE_MAX})
-                if etat_rejuge["en_cours"] or not cfg.get("_chemin_config"):
-                    return self._json({"ok": False, "erreur": "déjà en cours"}, 409)
+                if etat_rejuge["en_cours"]:
+                    return self._json({"ok": False, "erreur": "en_cours", "rejuge": dict(etat_rejuge),
+                                       "message": f"Un rejugement est déjà en cours "
+                                                  f"({etat_rejuge['fait']}/{etat_rejuge['total']})."}, 409)
+                if not cfg.get("_chemin_config"):
+                    return self._json({"ok": False, "erreur": "config", "message": "Configuration introuvable."}, 409)
                 _effacer_profil_a_rejuger(cfg)
+                etat_rejuge.update(en_cours=True, fait=0, total=0, bilan=None, erreur=None,
+                                   debut=datetime.now(timezone.utc).isoformat(), fin=None)
+
+                def progres(fait, total):
+                    etat_rejuge["fait"], etat_rejuge["total"] = fait, total
 
                 def tache():
-                    etat_rejuge["en_cours"] = True
+                    a = types.SimpleNamespace(config=cfg["_chemin_config"], mock=False, retout=True,
+                                              limite=REJUGE_MAX, jours=jours, compter=False,
+                                              progres=progres)
                     try:
-                        cmd_analyser_ia(types.SimpleNamespace(
-                            config=cfg["_chemin_config"], mock=False, retout=True,
-                            limite=REJUGE_MAX, jours=jours, compter=False))
+                        cmd_analyser_ia(a)
+                        etat_rejuge["bilan"] = getattr(a, "bilan", None)
                     except BaseException as e:
+                        etat_rejuge["erreur"] = str(e) or e.__class__.__name__
                         print(f"[{NOM}] rejugement : {e}", file=sys.stderr)
                     finally:
                         etat_rejuge["en_cours"] = False
+                        etat_rejuge["fin"] = datetime.now(timezone.utc).isoformat()
                 threading.Thread(target=tache, daemon=True).start()
-                self._json({"ok": True, "jours": jours})
+                self._json({"ok": True, "jours": jours, "rejuge": dict(etat_rejuge)})
             elif self.path == "/api/action":
                 e = c.get("etat")
                 e = None if e in (None, "", "a_traiter") else e
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 cx.execute("UPDATE messages SET etat=? WHERE message_id=?", (e, mid))
                 cx.commit()
                 cx.close()
                 self._json({"ok": True})
             elif self.path == "/api/ouvrir":
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 row = cx.execute("SELECT fichier_eml FROM messages WHERE message_id=?",
                                  (mid,)).fetchone()
                 cx.close()
@@ -3147,7 +3201,7 @@ def faire_cockpit_handler(cfg):
                 # L'extension confirme ce qu'elle a appliqué dans Thunderbird.
                 marques = c.get("marques", []) or []
                 demarques = c.get("demarques", []) or []
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 for i in marques:
                     cx.execute("UPDATE messages SET tb_sync='traite' WHERE message_id=?", (i,))
                 for i in demarques:
@@ -3166,7 +3220,7 @@ def faire_cockpit_handler(cfg):
                     nu = (i or "").strip().strip("<>")
                     return [nu, "<" + nu + ">", (i or "").strip()]
 
-                cx = sqlite3.connect(db)
+                cx = _ouvrir_db(db)
                 maj = 0
                 for i in traites:
                     v = _variantes(i)
@@ -3237,6 +3291,10 @@ dialog label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
 dialog input[type=text],dialog textarea{width:100%;font:14px system-ui;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--tx)}
 dialog textarea{min-height:150px;resize:vertical}dialog .aide{font-size:12px;color:var(--mut);margin-top:4px}
 #topotexte{white-space:pre-wrap;font-size:13px;margin-top:8px}
+#progres{display:none;max-width:840px;margin:10px auto 0;padding:10px 14px;border:1px solid #b2ddff;background:#eff8ff;color:#175cd3;border-radius:10px;font-size:14px}
+#progres .barre{height:6px;background:#d1e9ff;border-radius:3px;margin-top:6px;overflow:hidden}
+#progresbarre{height:100%;width:0;background:#2e90fa;transition:width .4s}
+#dlg .intro{background:#fffaeb;border:1px solid #fedf89;color:#93370d;border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:8px}
 #relie{display:none;max-width:840px;margin:10px auto 0;padding:10px 14px;border:1px solid #abefc6;background:#ecfdf3;color:#085d3a;border-radius:10px;font-size:14px}
 #relie a{color:inherit;font-weight:600}
 body.relie #relie{display:block}
@@ -3253,8 +3311,10 @@ body.relie .btns button:not([data-a="ouvrir"]),body.relie .prec,body.relie #regl
 </header>
 <div id="relie">🔗 Ce poste est <b>relié à GesEnt</b> : c'est là que l'on traite, délègue et corrige (GesEnt fait foi). Ce cockpit reste consultable, en lecture seule. <a id="relielien" target="_blank" rel="noopener">Ouvrir GesEnt</a></div>
 <div id="alerte"><div id="alertetexte"></div></div>
+<div id="progres"><div id="progrestexte"></div><div class="barre"><div id="progresbarre"></div></div></div>
 <dialog id="dlg">
   <h1>Réglages — pour qui l'IA trie</h1>
+  <div id="r-intro" class="intro" style="display:none"></div>
   <label for="r-nom">Ton nom</label><input type="text" id="r-nom" maxlength="120">
   <label for="r-fonction">Ta fonction</label><input type="text" id="r-fonction" maxlength="120" placeholder="Responsable informatique et communication d'une fédération d'entreprises">
   <label for="r-profil">Ce qui compte pour toi</label>
@@ -3265,6 +3325,7 @@ body.relie .btns button:not([data-a="ouvrir"]),body.relie .prec,body.relie #regl
   <div class="btns"><button class="ok" id="r-ok">Enregistrer</button>
     <button id="r-rejuger" title="Appels IA payants, bornés à 300 messages ; le nombre exact est annoncé avant">Enregistrer et rejuger les 14 derniers jours…</button>
     <button id="r-annuler">Fermer</button></div>
+  <div class="aide" id="r-change" style="display:none">Ton profil a changé : les messages déjà jugés l'ont été avec l'ancien. « Enregistrer et rejuger » les met à jour.</div>
   <div class="aide" id="r-etat"></div>
 </dialog>
 <div id="barreaudio" style="display:none;max-width:840px;margin:10px auto 0;padding:0 16px">
@@ -3278,6 +3339,7 @@ const api=(p,b)=>fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'applica
 document.getElementById('audio').onclick=async()=>{
   const b=document.getElementById('audio');b.textContent='⏳ génération…';b.disabled=true;
   try{const r=await api('/api/topo-audio',{});
+    if(r.erreur==='topo'){alert(r.message);return;}
     document.getElementById('audiotexte').textContent=r.court||'';
     document.getElementById('topotexte').textContent=r.complet||'';
     document.getElementById('toposource').textContent=r.source==='ia'?"rédigé par l'IA":'gabarit local (IA indisponible)';
@@ -3408,26 +3470,65 @@ document.getElementById('v-reporte').onclick=()=>setVue('reporte');
 document.getElementById('v-masse').onclick=()=>setVue('masse');
 // --- Réglages : pour qui l'IA trie ---
 const $=id=>document.getElementById(id);
-function alertes(l){$('alerte').style.display=(l&&l.length)?'block':'none';
-  $('alertetexte').innerHTML=(l||[]).map(x=>'⚠ '+esc(x)).join('<br>')+' <a href="#" id="al-regl">Ouvrir les réglages</a>';
-  const a=$('al-regl');if(a)a.onclick=e=>{e.preventDefault();ouvrirReglages();};}
-async function ouvrirReglages(){const r=await api('/api/reglages');const u=r.utilisateur||{};
-  $('r-nom').value=u.nom||'';$('r-fonction').value=u.fonction||'';$('r-profil').value=u.profil||'';
+let charge={},aRejuger=false;
+function alertes(l,rejuger){aRejuger=!!rejuger;$('alerte').style.display=(l&&l.length)?'block':'none';
+  const lien=aRejuger?'<a href="#" id="al-rejuger">Rejuger maintenant</a> · <a href="#" id="al-regl">Réglages</a>':'<a href="#" id="al-regl">Ouvrir les réglages</a>';
+  $('alertetexte').innerHTML=(l||[]).map(x=>'⚠ '+esc(x)).join('<br>')+' '+lien;
+  const a=$('al-regl');if(a)a.onclick=e=>{e.preventDefault();ouvrirReglages();};
+  const b=$('al-rejuger');if(b)b.onclick=e=>{e.preventDefault();lancerRejuge();};}
+function valeurs(){return {utilisateur:{nom:$('r-nom').value.trim(),fonction:$('r-fonction').value.trim(),profil:$('r-profil').value.trim()},
+  mes_adresses:$('r-adresses').value.split(/[\\s,;]+/).filter(Boolean)};}
+const profilChange=()=>{const v=valeurs().utilisateur;return ['nom','fonction','profil'].some(k=>(v[k]||'')!==(charge[k]||''));};
+function majChange(){$('r-change').style.display=(profilChange()&&$('r-fonction').value.trim())?'':'none';
+  $('r-rejuger').classList.toggle('ok',profilChange());$('r-ok').classList.toggle('ok',!profilChange());}
+['r-nom','r-fonction','r-profil'].forEach(id=>$(id).addEventListener('input',majChange));
+async function ouvrirReglages(bloquants){const r=await api('/api/reglages');const u=r.utilisateur||{};
+  charge={nom:u.nom||'',fonction:u.fonction||'',profil:u.profil||''};
+  $('r-nom').value=charge.nom;$('r-fonction').value=charge.fonction;$('r-profil').value=charge.profil;
   $('r-adresses').value=(r.mes_adresses||[]).join('\\n');
-  $('r-etat').textContent=r.rejuge_en_cours?'Rejugement en cours…':('IA : '+r.ia.fournisseur+(r.ia.modele?' / '+r.ia.modele:''));
-  $('dlg').showModal();}
-async function sauver(){const r=await api('/api/reglages',{utilisateur:{nom:$('r-nom').value,fonction:$('r-fonction').value,profil:$('r-profil').value},
-  mes_adresses:$('r-adresses').value.split(/[\\s,;]+/).filter(Boolean)});alertes(r.alertes);return r;}
-$('reglages').onclick=ouvrirReglages;
-$('r-annuler').onclick=()=>$('dlg').close();
-$('r-ok').onclick=async()=>{await sauver();$('dlg').close();charger();};
-$('r-rejuger').onclick=async()=>{await sauver();
+  const bl=bloquants||r.bloquants||[];
+  $('r-intro').style.display=bl.length?'':'none';
+  $('r-intro').innerHTML=bl.length?'<b>Avant de trier, il me manque :</b><br>'+bl.map(x=>'• '+esc(x)).join('<br>'):'';
+  $('r-etat').textContent=r.rejuge&&r.rejuge.en_cours?'Rejugement en cours…':('IA : '+r.ia.fournisseur+(r.ia.modele?' / '+r.ia.modele:''));
+  majChange();$('dlg').showModal();
+  const vide=['r-fonction','r-adresses'].find(id=>!$(id).value.trim());if(vide)$(vide).focus();}
+async function sauver(){$('r-etat').textContent='Enregistrement…';
+  const r=await api('/api/reglages',valeurs());charge=Object.assign({},valeurs().utilisateur);
+  alertes(r.alertes,false);$('r-etat').textContent='Enregistré.';return r;}
+// Rejuger : estimation, accord (appels payants), puis barre de progression visible partout.
+async function lancerRejuge(){
   const est=await api('/api/rejuger',{jours:14,compter:true});
-  if(!est.n){$('r-etat').textContent='Rien à rejuger sur les 14 derniers jours.';return;}
-  if(!confirm("Rejuger "+est.n+" message(s) des 14 derniers jours avec ce profil ?\\n\\nCela consomme des crédits IA ("+est.n+" appel(s), "+est.max+" au plus). Tes corrections sont conservées."))return;
-  const r=await api('/api/rejuger',{jours:14});
-  $('r-etat').textContent=r.ok?'Rejugement lancé : recharge le cockpit dans quelques minutes.':('Impossible : '+(r.erreur||''));};
-api('/api/reglages').then(r=>alertes(r.alertes)).catch(()=>{});
+  if(!est.n){alert('Rien à rejuger sur les 14 derniers jours.');return false;}
+  if(!confirm("Rejuger "+est.n+" message(s) des 14 derniers jours avec ce profil ?\\n\\nCela consomme des crédits IA ("+est.n+" appel(s), "+est.max+" au plus). Tes corrections sont conservées."))return false;
+  const r=await fetch('/api/rejuger',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jours:14})}).then(x=>x.json());
+  if(!r.ok&&r.erreur!=='en_cours'){alert('Impossible : '+(r.message||r.erreur||''));return false;}
+  if($('dlg').open)$('dlg').close();
+  $('alerte').style.display='none';suivreRejuge();return true;}
+let suivi=null;
+function suivreRejuge(){if(suivi)return;
+  const tour=async()=>{let p;try{p=(await api('/api/progression')).rejuge;}catch(e){return;}
+    const bloc=$('progres');bloc.style.display='block';
+    if(p.en_cours){const pct=p.total?Math.round(100*p.fait/p.total):0;
+      $('progrestexte').textContent=p.total?('🧠 Rejugement avec ton profil : '+p.fait+' / '+p.total+' message(s)… tu peux continuer à travailler.'):'🧠 Rejugement : préparation…';
+      $('progresbarre').style.width=pct+'%';return;}
+    clearInterval(suivi);suivi=null;$('progresbarre').style.width='100%';
+    $('progrestexte').textContent=p.erreur?('Rejugement interrompu : '+p.erreur):
+      ('✅ Rejugement terminé'+(p.bilan?' : '+p.bilan.juges+' jugé(s)'+(p.bilan.erreurs?', '+p.bilan.erreurs+' en erreur':''):'')+'.');
+    charger();setTimeout(()=>{bloc.style.display='none';},8000);};
+  tour();suivi=setInterval(tour,2000);}
+$('reglages').onclick=()=>ouvrirReglages();
+$('r-annuler').onclick=()=>$('dlg').close();
+$('r-ok').onclick=async()=>{const change=profilChange()&&$('r-fonction').value.trim();
+  await sauver();
+  if(change&&confirm("Ton profil a changé : les messages déjà jugés l'ont été avec l'ancien.\\n\\nLes rejuger maintenant avec le nouveau profil ? (recommandé — le nombre d'appels IA est annoncé juste après)")){
+    if(await lancerRejuge())return;}
+  $('dlg').close();charger();};
+$('r-rejuger').onclick=async()=>{const b=$('r-rejuger');b.disabled=true;
+  try{await sauver();await lancerRejuge();}finally{b.disabled=false;}};
+api('/api/reglages').then(r=>{alertes(r.alertes,r.a_rejuger);
+  if(r.rejuge&&r.rejuge.en_cours)suivreRejuge();
+  else if(r.bloquants&&r.bloquants.length)ouvrirReglages(r.bloquants);   // bloquant : on y va directement
+}).catch(()=>{});
 document.getElementById('nonlus').onchange=e=>{state.nonlus=e.target.checked;charger();};
 document.getElementById('depuis').onchange=e=>{state.depuis=e.target.value;
   document.getElementById('l-nonlus').style.display=(state.vue==='atraiter'&&!state.depuis)?'':'none';charger();};

@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -450,6 +451,67 @@ class Serveur(Base):
         st, _, b = self.req("POST", "/api/rejuger", {"jours": 14, "compter": True})
         self.assertEqual((st, json.loads(b)["n"], json.loads(b)["max"]), (200, 0, 300))
         self.assertEqual(self.cx.execute("SELECT ia_urgence FROM messages").fetchone()[0], "haute")
+
+    def test_rejugement_suivi_et_ecritures_pendant(self):
+        """Rejuger : progression lisible (fait/total), un second lancement explique ce qui
+        tourne, et le cockpit peut écrire (traiter, topo) pendant les appels IA."""
+        for i in range(4):
+            self.ins(f"r{i}", sujet=f"Demande {i}")
+        self.cfg["utilisateur"] = {"nom": "A", "fonction": "Informatique", "profil": ""}
+        verrou, vus = threading.Event(), []
+
+        def lent(cfg_ia, systeme, entree):
+            vus.append(1)
+            if len(vus) == 2:
+                verrou.wait(10)             # appel IA « long » : le cockpit doit rester libre
+            return json.dumps(BON)
+        M.appeler_mistral = lent
+        st, _, b = self.req("POST", "/api/rejuger", {"jours": 14})
+        self.assertEqual(st, 200)
+        for _ in range(100):
+            p = json.loads(self.req("GET", "/api/progression")[2])["rejuge"]
+            if p["fait"] >= 1 and p["total"]:
+                break
+            time.sleep(0.05)
+        self.assertTrue(p["en_cours"] and p["total"] >= 4 and p["fait"] >= 1, p)
+        st, _, b = self.req("POST", "/api/rejuger", {"jours": 14})
+        self.assertEqual((st, json.loads(b)["erreur"]), (409, "en_cours"))
+        self.assertIn("déjà en cours", json.loads(b)["message"])
+        t0 = time.time()                                                  # écrire pendant l'appel IA
+        self.assertEqual(self.req("POST", "/api/action", {"id": "s1", "etat": "traite"})[0], 200)
+        self.assertLess(time.time() - t0, 5)
+        verrou.set()
+        for _ in range(200):
+            p = json.loads(self.req("GET", "/api/progression")[2])["rejuge"]
+            if not p["en_cours"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(p["en_cours"])
+        self.assertEqual((p["fait"], p["bilan"]["erreurs"]), (p["total"], 0))
+        self.assertGreaterEqual(p["bilan"]["juges"], 4)
+
+    def test_reglages_bloquants(self):
+        """Sans adresses ni fonction, le cockpit ouvre directement les réglages."""
+        b = json.loads(self.req("GET", "/api/reglages")[2])["bloquants"]
+        self.assertEqual(len(b), 1)                                       # fonction absente
+        self.assertIn("fonction", b[0])
+        self.req("POST", "/api/reglages", {"utilisateur": {"fonction": "Informatique"}, "mes_adresses": []})
+        b = json.loads(self.req("GET", "/api/reglages")[2])["bloquants"]
+        self.assertEqual(len(b), 1)
+        self.assertIn("adresses", b[0])
+        self.req("POST", "/api/reglages", {"utilisateur": {"fonction": "Informatique"}, "mes_adresses": ["moi@ccl.be"]})
+        r = json.loads(self.req("GET", "/api/reglages")[2])
+        self.assertEqual((r["bloquants"], r["a_rejuger"]), ([], True))
+
+    def test_topo_en_erreur_reste_lisible(self):
+        garde = M.construire_script_topo
+        M.construire_script_topo = lambda *a, **k: (_ for _ in ()).throw(M.sqlite3.OperationalError("database is locked"))
+        try:
+            st, _, b = self.req("POST", "/api/topo-audio", {})
+        finally:
+            M.construire_script_topo = garde
+        self.assertEqual((st, json.loads(b)["erreur"]), (500, "topo"))
+        self.assertIn("Réessaie", json.loads(b)["message"])
 
     def test_relie_a_gesent_lecture_seule(self):
         """Relié à GesEnt (annoncé par l'extension) : GesEnt fait foi, cockpit en lecture
