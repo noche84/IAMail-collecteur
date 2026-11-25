@@ -156,6 +156,27 @@ class CaseDuJour(Base):
         self.ins("ancien_critique", jours=0); self.juge("ancien_critique", urgence="critique")
         self.assertEqual(self.cases()["maintenant"][0], "ancien_critique")
 
+    def test_jugement_a_froid_ne_fait_pas_remonter_un_vieux_mail(self):
+        """Cas réel : un mail de mars (« corrections du Te Deum pour demain », « nouveau
+        local ») jugé cette nuit pendant le rattrapage de l'historique : l'IA a pris
+        « demain » pour le 27 novembre. Ses dates ne doivent rien faire remonter. Un vieux
+        mail jugé à temps, dont l'échéance tombe maintenant, remonte toujours."""
+        demain = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        maintenant = datetime.now(timezone.utc).isoformat()
+        ev = json.dumps({"evenement": {"date": demain, "heure": "20:00", "lieu": "Tihange"}})
+        self.ins("te_deum", sujet="Corrections Te Deum", jours=250)
+        self.juge("te_deum", action=1, echeance=demain, ia_extensions=ev, ia_at=maintenant)
+        self.ins("bail", sujet="Renouvellement du bail", jours=60)
+        jadis = (datetime.now(timezone.utc) - timedelta(days=59)).isoformat()
+        self.juge("bail", action=1, echeance=demain, ia_at=jadis)
+        ids = [i for x in M.cockpit_liste(self.cfg["base_sqlite"]) for i in [y["id"] for y in x["items"]]]
+        self.assertNotIn("te_deum", ids)
+        self.assertIn("bail", ids)
+        t = M.elements_topo(self.cx, self.cfg)
+        self.assertNotIn("te_deum", [e["id"] for e in t["elements"]])
+        self.assertEqual(t["evenements"], [])
+        self.assertIn("bail", [e["id"] for e in t["elements"]])
+
     def test_balle_dans_ton_camp(self):
         """Cas réel (Véronique, 19/11) : tu réponds, elle te redemande une offre, tu ne
         réponds plus. Même si l'IA n'y a pas vu d'action, la conversation remonte en tête."""
@@ -173,7 +194,8 @@ class CaseDuJour(Base):
         self.assertTrue(c["attente"][0]["balle"])
         t = M.elements_topo(self.cx, self.cfg)
         e = next(e for e in t["elements"] if e["id"] == "veronique")
-        self.assertEqual(e["case"], "maintenant")
+        self.assertEqual((e["case"], e["urgence"]), ("maintenant", "haute"))   # jamais « sans urgence »
+        self.assertEqual(t["elements"][0]["id"], "veronique")                  # en tête du topo
 
     def test_repondre_au_collegue_n_est_pas_repondre_au_demandeur(self):
         """Cas réel complet : Olivier (chorale) transfère la demande de Véronique ; tu

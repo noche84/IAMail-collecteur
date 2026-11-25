@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOM = "iamail-compagnon"
-VERSION = "1.25.2"
+VERSION = "1.25.3"
 
 CONFIG_DEFAUT = {
     "dossier_staging": "",
@@ -2759,6 +2759,12 @@ CASES_COCKPIT = [("agenda", "Agenda — aujourd'hui et demain"),
                  ("ce_mois", "Ce mois — à ne pas oublier"), ("aucune", "Pour info")]
 
 
+# Jugement « à froid » : rendu plus de 14 jours après la réception (rattrapage de
+# l'historique). L'IA y résout « demain », « jeudi prochain »… par rapport au jour du
+# jugement, pas à celui du mail : ses échéances et événements ne valent rien. On garde le
+# reste (catégorie, résumé), mais ces dates ne font jamais remonter un vieux mail.
+_SQL_A_FROID = "(ia_at IS NOT NULL AND julianday(ia_at) - julianday(date_mail) > 14)"
+
 _SQL_MASSE = ("(COALESCE(bulk,0)=1 AND COALESCE(important,0)=0 "
               "AND (ia_source IS NULL OR ia_source='erreur'))")
 
@@ -2810,7 +2816,8 @@ def cockpit_liste(db, vue="atraiter", non_lus=False, depuis=None, infos=None, jo
             ech = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
             filtre = ("(date_mail >= ? OR ((ia_action=1 OR (pour_moi=1 AND expediteur_humain=1 "
                       "AND COALESCE(bulk,0)=0)) AND date_mail >= ?) OR "
-                      "(ia_echeance IS NOT NULL AND ia_echeance != 'aucune' AND ia_echeance >= ?))")
+                      "(ia_echeance IS NOT NULL AND ia_echeance != 'aucune' AND ia_echeance >= ? "
+                      "AND NOT " + _SQL_A_FROID + "))")
             infos["masques_anciens"] = cx.execute(
                 f"SELECT COUNT(*) FROM messages WHERE {' AND '.join(conds)} AND NOT {filtre}",
                 params + [fen, att, ech]).fetchone()[0]
@@ -4079,9 +4086,9 @@ def elements_topo(cx, cfg):
     base = ("SELECT " + ", ".join(cols) + " FROM messages WHERE etat IS NULL "
             "AND categorie IS NOT NULL AND NOT " + _SQL_MASSE)
     rows = cx.execute(
-        base + " AND (date_mail >= ? OR (ia_echeance IS NOT NULL AND ia_echeance != 'aucune' "
-               "AND ia_echeance >= ?) OR ia_extensions LIKE ? OR ia_extensions LIKE ?) "
-               "ORDER BY date_mail DESC",
+        base + " AND (date_mail >= ? OR (NOT " + _SQL_A_FROID + " AND ((ia_echeance IS NOT NULL "
+               "AND ia_echeance != 'aucune' AND ia_echeance >= ?) OR ia_extensions LIKE ? "
+               "OR ia_extensions LIKE ?))) ORDER BY date_mail DESC",
         (plancher, ech_min, f'%"date": "{auj}"%', f'%"date": "{demain}"%')).fetchall()
 
     elements, evenements, n_susp = [], [], 0
@@ -4128,6 +4135,8 @@ def elements_topo(cx, cfg):
             # Demande restée sans réponse : elle passe devant, avec son ancienneté.
             e["case"] = "maintenant"
             e["sans_reponse_jours"] = max(1, (datetime.now(timezone.utc) - dm).days)
+            if NIVEAU_RANG.get(e["urgence"], 2) > NIVEAU_RANG["haute"]:
+                e["urgence"] = "haute"        # quelqu'un t'attend : jamais « sans urgence »
         recent = (m["date_mail"] or "") >= plancher
         if e["case"] in _CASES_TOPO and (recent or (ech and ech >= ech_min)):
             elements.append(e)
@@ -4138,7 +4147,8 @@ def elements_topo(cx, cfg):
         d = _dt_message(e["date"])
         if d is not None and d.tzinfo is None:
             d = d.replace(tzinfo=timezone.utc)
-        return (rang_case[e["case"]], NIVEAU_RANG.get(e["urgence"], 2),
+        return (rang_case[e["case"]], 0 if e.get("sans_reponse_jours") else 1,
+                NIVEAU_RANG.get(e["urgence"], 2),
                 0 if e["pour_moi"] == 1 else 1, e["echeance"] or "9999-99-99",
                 -(d.timestamp() if d else 0))
     elements.sort(key=cle)

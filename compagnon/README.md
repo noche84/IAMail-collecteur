@@ -238,6 +238,10 @@ Tests : `python3 -I compagnon/tests/test_pertinence.py` et
 - **1.25.2 — « tu as répondu » = répondu à CETTE personne** : une réponse dans le même
   fil mais à quelqu'un d'autre (le collègue qui t'a transféré la demande) ne compte plus
   comme une réponse à l'expéditeur.
+- **1.25.3 — topo fiable** : un jugement rendu « à froid » (plus de 14 jours après la
+  réception, lors d'un rattrapage d'historique) ne fait plus remonter un vieux mail par
+  ses dates — l'IA y lisait « demain » comme le lendemain du jugement. Dans le topo, une
+  demande sans réponse passe en tête de « Maintenant », jamais « sans urgence ».
 
 - **Non lus** : pour un compte IMAP (Gmail…), le fichier mbox marque tout « lu » — le
   vrai statut est dans l'index de Thunderbird. L'extension Thunderbird (2.2.0) envoie
